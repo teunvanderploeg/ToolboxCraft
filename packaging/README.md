@@ -29,6 +29,8 @@ The workflow imports the certificate into a temporary keychain and stores a `Too
 
 Set `WINDOWS_CERTIFICATE_BASE64` to the PFX, and `WINDOWS_SIGN_PASSWORD` to its password. The workflow writes it to a temporary file and locates the Windows SDK's signtool. Local packaging can use `WINDOWS_SIGN_PFX` as an existing file path. The package script signs executables before constructing archives and signs the NSIS installer after creation.
 
+Windows executables embed the ToolboxCraft artwork and version metadata through `apps/desktop/build.rs`. The installer and uninstaller use the same multi-size ICO. Regenerate it from the bundled PNG with `cargo run -p toolboxcraft --example make_windows_icon`. Packaging verifies both executables contain the expected artwork before creating any Windows archives.
+
 The NSIS installation is per-user and uses `$LOCALAPPDATA/Programs/ToolboxCraft`. Self-updates retain the installer uninstaller executable.
 
 ## Linux

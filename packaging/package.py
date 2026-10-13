@@ -5,7 +5,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 DIST = ROOT / 'dist'
 p = argparse.ArgumentParser()
 p.add_argument('--platform', choices=['macos-universal', 'windows-x64', 'windows-arm64', 'linux-x86_64', 'linux-aarch64'], required=True)
-p.add_argument('--version', default='0.1.3')
+p.add_argument('--version', default='0.1.4')
 p.add_argument('--bin-dir', type=pathlib.Path, required=True)
 a = p.parse_args()
 DIST.mkdir(exist_ok=True)
@@ -20,6 +20,9 @@ binaries.mkdir(parents=True)
 for name in ['toolboxcraft', 'toolboxcraft-updater']:
     executable = name + ('.exe' if windows else '')
     shutil.copy2(a.bin_dir / executable, binaries / executable)
+if windows:
+    subprocess.run([os.sys.executable, str(ROOT / 'packaging/verify_windows_icons.py'), str(ROOT / 'assets/icons/toolboxcraft.ico'), *[str(binaries / name) for name in ['toolboxcraft.exe', 'toolboxcraft-updater.exe']]], check=True)
+    shutil.copy2(ROOT / 'assets/icons/toolboxcraft.ico', app / 'toolboxcraft.ico')
 if mac:
     for executable in binaries.iterdir():
         architectures = subprocess.check_output(['lipo', '-archs', str(executable)], text=True).split()

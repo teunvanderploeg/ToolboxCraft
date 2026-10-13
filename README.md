@@ -6,9 +6,19 @@ A native Rust desktop launcher for the twelve Artcraft apps. Install, open, upda
 
 Get the latest build from [GitHub Releases](https://github.com/teunvanderploeg/ToolboxCraft/releases/latest).
 
-Version 0.1.3 includes a universal macOS DMG for Intel and Apple silicon. Open the DMG and drag ToolboxCraft into Applications. Quit an older copy before replacing it. This build is ad-hoc signed and has not been Apple-notarized. ToolboxCraft self-updates are not configured in this release.
+Downloads cover Intel and Apple silicon Macs, Windows x64 and ARM64, and Linux x86_64 and ARM64.
 
-Windows and Linux source and packaging workflows are included; native packages will be published after their platform checks pass.
+| System | Download | Alternative |
+| --- | --- | --- |
+| macOS, Intel and Apple silicon | [Universal DMG](https://github.com/teunvanderploeg/ToolboxCraft/releases/download/v0.1.4/toolboxcraft-0.1.4-macos-universal.dmg) | App bundle ZIP |
+| Windows x64 | [Per-user installer](https://github.com/teunvanderploeg/ToolboxCraft/releases/download/v0.1.4/toolboxcraft-0.1.4-windows-x64-setup.exe) | Portable ZIP |
+| Windows ARM64 | [Per-user installer](https://github.com/teunvanderploeg/ToolboxCraft/releases/download/v0.1.4/toolboxcraft-0.1.4-windows-arm64-setup.exe) | Portable ZIP |
+| Linux x86_64 | [AppImage](https://github.com/teunvanderploeg/ToolboxCraft/releases/download/v0.1.4/toolboxcraft-0.1.4-linux-x86_64.AppImage) | Tarball |
+| Linux ARM64 | [AppImage](https://github.com/teunvanderploeg/ToolboxCraft/releases/download/v0.1.4/toolboxcraft-0.1.4-linux-aarch64.AppImage) | Tarball |
+
+All alternatives and SHA-256 checksums are on the release page. On macOS, drag ToolboxCraft from the DMG into Applications. On Windows, run the installer or extract the portable ZIP and open `ToolboxCraft/toolboxcraft.exe`. On Linux, make the AppImage executable and run it. Quit an older copy before replacing it.
+
+The macOS build is ad-hoc signed and has not been Apple-notarized. ToolboxCraft self-updates are not configured in this release.
 
 ![ToolboxCraft app list](docs/screenshots/apps.png)
 
@@ -77,7 +87,7 @@ The CI workflow runs formatting, Clippy, tests, and native builds on macOS, Wind
 Build both Rust executables before packaging. On macOS, combine x86_64 and aarch64 builds with `lipo` into a shared binary directory. On Windows install NSIS and add `makensis` to PATH. On Linux install `appimagetool`.
 
 ```sh
-python3 packaging/package.py --platform macos-universal --version 0.1.3 --bin-dir target/universal/release
+python3 packaging/package.py --platform macos-universal --version 0.1.4 --bin-dir target/universal/release
 python3 packaging/manifest.py
 ```
 
