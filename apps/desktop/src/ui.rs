@@ -10,6 +10,7 @@ use toolboxcraft_core::{
 };
 const BLUE: Color32 = Color32::from_rgb(107, 138, 255);
 const MUTED: Color32 = Color32::from_rgb(165, 167, 172);
+const ICON_ACTION_SIZE: f32 = 28.0;
 fn muted(ui: &egui::Ui) -> Color32 {
     if ui.visuals().dark_mode {
         MUTED
@@ -47,7 +48,8 @@ fn text_action(ui: &mut egui::Ui, label: &str) -> egui::Response {
     response.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 fn icon_action(ui: &mut egui::Ui, icon: &str, label: &str) -> egui::Response {
-    let (rect, response) = ui.allocate_exact_size(egui::vec2(28.0, 28.0), egui::Sense::click());
+    let (rect, response) =
+        ui.allocate_exact_size(egui::Vec2::splat(ICON_ACTION_SIZE), egui::Sense::click());
     let color = if response.hovered() || response.has_focus() {
         ui.visuals().text_color()
     } else {
@@ -357,6 +359,9 @@ impl Toolbox {
                                 Operation::Downloading { received, total } => {
                                     ui.add_space(8.0);
                                     ui.horizontal(|ui| {
+                                        ui.set_height(
+                                            ui.spacing().interact_size.y.max(ICON_ACTION_SIZE),
+                                        );
                                         let fraction = if *total == 0 {
                                             0.0
                                         } else {
@@ -365,7 +370,10 @@ impl Toolbox {
                                         ui.add(
                                             egui::ProgressBar::new(fraction)
                                                 .desired_width(
-                                                    (ui.available_width() - 45.0).max(100.0),
+                                                    (ui.available_width()
+                                                        - ICON_ACTION_SIZE
+                                                        - ui.spacing().item_spacing.x)
+                                                        .max(100.0),
                                                 )
                                                 .text(format!(
                                                     "{:.1} / {:.1} MB",
