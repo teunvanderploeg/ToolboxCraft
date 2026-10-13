@@ -97,7 +97,6 @@ pub struct Toolbox {
     search: String,
     settings_open: bool,
     details: Option<String>,
-    remove: Option<String>,
     notice: String,
     update: Option<self_update::SelfUpdate>,
     background: bool,
@@ -157,7 +156,6 @@ impl Toolbox {
             } else {
                 None
             },
-            remove: None,
             notice: String::new(),
             update: None,
             background,
@@ -251,8 +249,7 @@ impl Toolbox {
                                             RichText::new(&subtitle).size(12.0).color(muted(ui)),
                                         )
                                         .truncate(),
-                                    )
-                                    .on_hover_text(subtitle);
+                                    );
                                     if update && text_action(ui, "What's new").clicked() {
                                         self.details = Some(app.id.into());
                                     }
@@ -296,15 +293,16 @@ impl Toolbox {
                                                         settings.disabled_apps.push(app.id.into());
                                                     }
                                                     self.send(Command::Settings(settings));
+                                                    ui.close();
                                                 }
                                                 if ui
                                                     .add_enabled(
                                                         !active,
-                                                        egui::Button::new("Uninstall…"),
+                                                        egui::Button::new("Uninstall"),
                                                     )
                                                     .clicked()
                                                 {
-                                                    self.remove = Some(app.id.into());
+                                                    self.send(Command::Remove(app.id.into()));
                                                     ui.close();
                                                 }
                                             } else if installation.is_some()
@@ -816,10 +814,6 @@ impl eframe::App for Toolbox {
                         }
                     });
             });
-        if let Some(id) = self.remove.clone() {
-            let app = by_id(&id).unwrap();
-            egui::Window::new(format!("Uninstall {}?",app.name)).collapsible(false).resizable(false).show(ctx,|ui|{ui.label("Application files and ToolboxCraft shortcuts will be removed. Your documents and app preferences will remain.");ui.horizontal(|ui|{if ui.button("Cancel").clicked(){self.remove=None;} else if ui.button("Uninstall").clicked(){self.send(Command::Remove(id.clone()));self.remove=None;}});});
-        }
         if self.frames == 32 && self.screenshot.is_some() {
             ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(egui::UserData::default()));
         }
@@ -1101,6 +1095,54 @@ mod tests {
         h.get_by_label("What's new").click();
         h.run_steps(3);
         assert!(commands.try_recv().is_err());
+    }
+    #[test]
+    fn uninstall_removes_immediately_without_confirmation_or_launching() {
+        let (mut h, mut commands) = harness_with_commands();
+        h.state_mut().preview = false;
+        h.state_mut().tray_attempted = true;
+        h.get_by_label("PhotoCraft")
+            .get_by_label("More options")
+            .click();
+        h.run_steps(3);
+        assert!(commands.try_recv().is_err());
+        h.get_by_label("Uninstall").click();
+        h.run_steps(3);
+        assert!(matches!(commands.try_recv().unwrap(), Command::Remove(id) if id == "photocraft"));
+        assert!(commands.try_recv().is_err());
+        assert!(h.query_by_label("Uninstall").is_none(), "menu should close");
+        assert!(h.query_by_label("Uninstall PhotoCraft?").is_none());
+        assert!(
+            h.query_by_label("Your documents and preferences stay.")
+                .is_none()
+        );
+    }
+    #[test]
+    fn uninstall_is_disabled_during_operations_and_absent_for_external_apps() {
+        for managed in [true, false] {
+            let (mut h, mut commands) = harness_with_commands();
+            h.state_mut().preview = false;
+            h.state_mut().tray_attempted = true;
+            {
+                let mut state = h.state().handle.state.lock().unwrap();
+                state.installations.get_mut("photocraft").unwrap().managed = managed;
+                state
+                    .operations
+                    .insert("photocraft".into(), Operation::Installing);
+            }
+            h.run_steps(3);
+            h.get_by_label("PhotoCraft")
+                .get_by_label("More options")
+                .click();
+            h.run_steps(3);
+            if managed {
+                h.get_by_label("Uninstall").click();
+                h.run_steps(3);
+            } else {
+                assert!(h.query_by_label("Uninstall").is_none());
+            }
+            assert!(commands.try_recv().is_err());
+        }
     }
     #[test]
     fn settings_replace_catalog_and_back_restores_it() {

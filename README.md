@@ -78,7 +78,7 @@ cargo run -p toolboxcraft -- --preview --preview-settings --screenshot /absolute
 cargo run -p toolboxcraft -- --preview --preview-notes --screenshot /absolute/path/release-notes.png
 ```
 
-Search app names or descriptions, use Cmd/Ctrl+F to focus search, click an installed app row to open it, use What's new or the overflow menu for full-page release notes, and use its overflow menu for automatic-update controls and uninstall. Closing the window keeps the launcher in the tray when a tray is available; use Quit to exit. On Windows, left-click or double-click the tray icon to restore and focus ToolboxCraft; right-click opens its menu. The restore path also handles minimized windows without waiting for the hidden UI to repaint. Launching ToolboxCraft again on Windows activates the existing window instead of starting another instance. Press Escape to return from Settings or release notes without losing your search.
+Search app names or descriptions, use Cmd/Ctrl+F to focus search, click an installed app row to open it, use What's new or the overflow menu for full-page release notes, and use its overflow menu for automatic-update controls and uninstall. Uninstall removes the managed app immediately, without a confirmation. Your documents and app preferences stay. Closing the window keeps the launcher in the tray when a tray is available; use Quit to exit. On Windows, left-click or double-click the tray icon to restore and focus ToolboxCraft; right-click opens its menu. The restore path also handles minimized windows without waiting for the hidden UI to repaint. Launching ToolboxCraft again on Windows activates the existing window instead of starting another instance. Press Escape to return from Settings or release notes without losing your search.
 
 ## Package releases
 
@@ -87,7 +87,7 @@ The CI workflow runs formatting, Clippy, tests, and native builds on macOS, Wind
 Build both Rust executables before packaging. On macOS, combine x86_64 and aarch64 builds with `lipo` into a shared binary directory. On Windows install NSIS and add `makensis` to PATH. On Linux install `appimagetool`.
 
 ```sh
-python3 packaging/package.py --platform macos-universal --version 0.1.5 --bin-dir target/universal/release
+python3 packaging/package.py --platform macos-universal --version 0.1.6 --bin-dir target/universal/release
 python3 packaging/manifest.py
 ```
 
