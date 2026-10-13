@@ -91,6 +91,7 @@ pub fn stage(native: &Native, package: &Path) -> Result<()> {
         (launcher == "--file" && replacement.is_file()) || replacement.join(launcher).is_file(),
         "Self-update package has no launcher executable"
     );
+    validate_target(&target)?;
     if native.target.os == Os::Windows {
         let uninstaller = target.join("Uninstall.exe");
         if uninstaller.is_file() {
@@ -121,6 +122,31 @@ pub fn stage(native: &Native, package: &Path) -> Result<()> {
         .arg(replacement)
         .arg(launcher)
         .spawn()?;
+    Ok(())
+}
+fn validate_target(target: &Path) -> Result<()> {
+    ensure!(
+        !target.with_extension("toolboxcraft-backup").exists(),
+        "An earlier ToolboxCraft update needs recovery before another update can be installed"
+    );
+    ensure!(
+        !target.with_extension("toolboxcraft-update").exists(),
+        "An earlier ToolboxCraft update staging folder needs recovery"
+    );
+    let parent = target
+        .parent()
+        .context("Installation has no parent directory")?;
+    let probe = parent.join(format!(
+        ".toolboxcraft-write-check-{}-{}.tmp",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_nanos()
+    ));
+    let file = fs::OpenOptions::new().write(true).create_new(true).open(&probe)
+        .context("ToolboxCraft cannot update this installation. Move it to a writable location such as ~/Applications or your user applications folder.")?;
+    drop(file);
+    fs::remove_file(probe)?;
     Ok(())
 }
 pub fn apply(args: &[String]) -> Result<()> {
@@ -247,6 +273,24 @@ mod tests {
     use super::*;
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
+    #[test]
+    fn staging_detects_recovery_and_write_failures_before_requesting_restart() {
+        let d = tempfile::tempdir().unwrap();
+        let target = d.path().join("ToolboxCraft");
+        fs::create_dir(&target).unwrap();
+        assert!(validate_target(&target).is_ok());
+        let backup = target.with_extension("toolboxcraft-backup");
+        fs::create_dir(&backup).unwrap();
+        assert!(
+            validate_target(&target)
+                .unwrap_err()
+                .to_string()
+                .contains("needs recovery")
+        );
+        fs::remove_dir(backup).unwrap();
+        assert!(validate_target(&d.path().join("missing-parent/ToolboxCraft")).is_err());
+        assert_eq!(fs::read_dir(d.path()).unwrap().count(), 1);
+    }
     #[test]
     fn signed_updates_support_ad_hoc_builds_and_preserve_existing_apple_publisher() {
         assert!(publisher_matches(None, None));
