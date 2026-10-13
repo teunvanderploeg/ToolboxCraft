@@ -107,6 +107,25 @@ pub struct Toolbox {
     quit: bool,
     last_state: State,
 }
+fn wake_engine_events(
+    events: mpsc::Receiver<Event>,
+    window: crate::window::WindowControl,
+) -> mpsc::Receiver<Event> {
+    let (sender, receiver) = mpsc::channel();
+    std::thread::spawn(move || {
+        for event in events {
+            if matches!(event, Event::RestartReady) {
+                window.request_restart();
+            } else {
+                window.wake();
+            }
+            if sender.send(event).is_err() {
+                break;
+            }
+        }
+    });
+    receiver
+}
 impl Toolbox {
     pub fn new(
         cc: &eframe::CreationContext<'_>,
@@ -144,11 +163,17 @@ impl Toolbox {
             cc.egui_ctx
                 .send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(460.0, 720.0)));
         }
+        let window = crate::window::WindowControl::new(cc);
+        let events = if preview {
+            events
+        } else {
+            wake_engine_events(events, window.clone())
+        };
         Self {
             handle,
             events,
             tray: None,
-            window: crate::window::WindowControl::new(cc),
+            window,
             tray_attempted: false,
             search: String::new(),
             settings_open: preview && std::env::args().any(|arg| arg == "--preview-settings"),
@@ -1152,6 +1177,26 @@ mod tests {
             }
             assert!(commands.try_recv().is_err());
         }
+    }
+    #[test]
+    fn background_update_wakes_a_hidden_window_to_restart() {
+        let mut h = harness();
+        let (sender, events) = mpsc::channel();
+        let receiver = wake_engine_events(events, h.state().window.clone());
+        h.state().window.hide();
+        sender.send(Event::RestartReady).unwrap();
+        assert!(matches!(
+            receiver.recv_timeout(Duration::from_secs(2)).unwrap(),
+            Event::RestartReady
+        ));
+        assert!(h.state().window.quit_requested());
+        h.step();
+        assert!(h.state().quit);
+        assert!(
+            h.output().viewport_output[&egui::ViewportId::ROOT]
+                .commands
+                .contains(&egui::ViewportCommand::Close)
+        );
     }
     #[test]
     fn settings_controls_launcher_updates_and_restart_event_exits() {

@@ -118,6 +118,29 @@ impl WindowControl {
     pub fn quit_requested(&self) -> bool {
         self.quit_requested.load(Ordering::Relaxed)
     }
+    pub fn wake(&self) {
+        self.context.request_repaint();
+    }
+    /// The updater completes on a worker thread, including while hidden to tray.
+    pub fn request_restart(&self) {
+        self.quit_requested.store(true, Ordering::Relaxed);
+        #[cfg(target_os = "windows")]
+        if let Some(hwnd) = self.hwnd {
+            use windows_sys::Win32::UI::WindowsAndMessaging::*;
+            let hwnd = hwnd as windows_sys::Win32::Foundation::HWND;
+            unsafe {
+                if IsWindow(hwnd) != 0 {
+                    // Unlike ShowWindow, this does not block the worker on the UI thread.
+                    ShowWindowAsync(hwnd, SW_SHOWNOACTIVATE);
+                }
+            }
+        }
+        self.context
+            .send_viewport_cmd(egui::ViewportCommand::Visible(true));
+        self.context
+            .send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+        self.wake();
+    }
     pub fn hide(&self) {
         self.context
             .send_viewport_cmd(egui::ViewportCommand::Visible(false));
