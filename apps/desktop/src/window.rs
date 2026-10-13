@@ -1,5 +1,9 @@
 use crate::tray::TrayAction;
 use eframe::egui;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 
 /// A second Windows launch should activate the existing instance, not silently exit.
 #[cfg(target_os = "windows")]
@@ -34,6 +38,7 @@ pub fn activate_existing() -> bool {
 #[derive(Clone)]
 pub struct WindowControl {
     context: egui::Context,
+    quit_requested: Arc<AtomicBool>,
     #[cfg(target_os = "windows")]
     hwnd: Option<usize>,
 }
@@ -53,6 +58,7 @@ impl WindowControl {
         };
         Self {
             context: cc.egui_ctx.clone(),
+            quit_requested: Arc::new(AtomicBool::new(false)),
             #[cfg(target_os = "windows")]
             hwnd,
         }
@@ -61,6 +67,11 @@ impl WindowControl {
         // Queue before waking so the first restored frame can handle Quit immediately.
         if actions.send(action).is_err() {
             return;
+        }
+        if matches!(action, TrayAction::Quit) {
+            // UI shutdown must not wait for tray refresh or the engine's state lock.
+            self.quit_requested.store(true, Ordering::Relaxed);
+            tracing::info!("Quit requested from tray");
         }
         #[cfg(target_os = "windows")]
         if let Some(hwnd) = self.hwnd {
@@ -83,7 +94,9 @@ impl WindowControl {
                             SetForegroundWindow(hwnd);
                         }
                         TrayAction::Quit => {
-                            if IsWindowVisible(hwnd) == 0 || IsIconic(hwnd) != 0 {
+                            if IsIconic(hwnd) != 0 {
+                                ShowWindow(hwnd, SW_RESTORE);
+                            } else if IsWindowVisible(hwnd) == 0 {
                                 ShowWindow(hwnd, SW_SHOWNOACTIVATE);
                             }
                         }
@@ -91,19 +104,42 @@ impl WindowControl {
                 }
             }
         }
+        // Keep eframe's visibility commands in sync with the native restore. A
+        // pending hide must not prevent the subsequent close frame from running.
+        self.context
+            .send_viewport_cmd(egui::ViewportCommand::Visible(true));
+        self.context
+            .send_viewport_cmd(egui::ViewportCommand::Minimized(false));
         if matches!(action, TrayAction::Open) {
-            self.context
-                .send_viewport_cmd(egui::ViewportCommand::Visible(true));
-            self.context
-                .send_viewport_cmd(egui::ViewportCommand::Minimized(false));
             self.context.send_viewport_cmd(egui::ViewportCommand::Focus);
         }
         self.context.request_repaint();
+    }
+    pub fn quit_requested(&self) -> bool {
+        self.quit_requested.load(Ordering::Relaxed)
+    }
+    pub fn hide(&self) {
+        self.context
+            .send_viewport_cmd(egui::ViewportCommand::Visible(false));
+        #[cfg(target_os = "windows")]
+        if let Some(hwnd) = self.hwnd {
+            use windows_sys::Win32::UI::WindowsAndMessaging::*;
+            let hwnd = hwnd as windows_sys::Win32::Foundation::HWND;
+            // A second launch can show the HWND while winit still caches it as
+            // hidden. In that state Visible(false) alone is a no-op in winit.
+            unsafe {
+                if IsWindow(hwnd) != 0 {
+                    ShowWindow(hwnd, SW_HIDE);
+                }
+            }
+        }
+        tracing::info!("Window hidden to tray");
     }
     #[cfg(all(test, any(target_os = "macos", target_os = "windows")))]
     pub fn for_test(context: egui::Context) -> Self {
         Self {
             context,
+            quit_requested: Arc::new(AtomicBool::new(false)),
             #[cfg(target_os = "windows")]
             hwnd: None,
         }
@@ -145,6 +181,7 @@ mod tests {
             let _window = OwnedWindow(hwnd);
             let control = WindowControl {
                 context: egui::Context::default(),
+                quit_requested: Arc::new(AtomicBool::new(false)),
                 hwnd: Some(hwnd as usize),
             };
             let (actions, events) = std::sync::mpsc::channel();
@@ -163,8 +200,65 @@ mod tests {
             ShowWindow(hwnd, SW_HIDE);
             control.signal(&actions, TrayAction::Quit);
             assert_ne!(IsWindowVisible(hwnd), 0);
+            assert!(control.quit_requested());
             assert!(matches!(events.try_recv().unwrap(), TrayAction::Open));
             assert!(matches!(events.try_recv().unwrap(), TrayAction::Quit));
+            // Quit needs a drawable window for both minimized and hidden/minimized
+            // states, without depending on an egui frame to restore it first.
+            for hide in [false, true] {
+                ShowWindow(hwnd, SW_MINIMIZE);
+                if hide {
+                    ShowWindow(hwnd, SW_HIDE);
+                }
+                assert_ne!(IsIconic(hwnd), 0);
+                control.signal(&actions, TrayAction::Quit);
+                assert_eq!(IsIconic(hwnd), 0);
+                assert_ne!(IsWindowVisible(hwnd), 0);
+                assert!(matches!(events.try_recv().unwrap(), TrayAction::Quit));
+            }
+            drop(_window);
+
+            // Reproduce the second-launch visibility mismatch with a real winit
+            // window: native ShowWindow does not update winit's visibility cache.
+            use raw_window_handle::HasWindowHandle;
+            use winit::platform::windows::EventLoopBuilderExtWindows;
+            let event_loop = winit::event_loop::EventLoop::builder()
+                .with_any_thread(true)
+                .build()
+                .unwrap();
+            #[allow(deprecated)] // Test synchronous visibility without running a GUI loop.
+            let window = event_loop
+                .create_window(
+                    winit::window::Window::default_attributes().with_title("ToolboxCraft"),
+                )
+                .unwrap();
+            window.set_visible(false);
+            assert_eq!(window.is_visible(), Some(false));
+            assert!(activate_existing());
+            assert_eq!(window.is_visible(), Some(true));
+            window.set_visible(false);
+            assert_eq!(
+                window.is_visible(),
+                Some(true),
+                "expected the stale-cache reproduction"
+            );
+            let raw_window_handle::RawWindowHandle::Win32(handle) =
+                window.window_handle().unwrap().as_raw()
+            else {
+                panic!("Expected a Win32 window");
+            };
+            let control = WindowControl {
+                context: egui::Context::default(),
+                quit_requested: Arc::new(AtomicBool::new(false)),
+                hwnd: Some(handle.hwnd.get() as usize),
+            };
+            control.hide();
+            assert_eq!(window.is_visible(), Some(false));
+            assert!(!control.quit_requested());
+            assert!(activate_existing());
+            assert_eq!(window.is_visible(), Some(true));
+            control.hide();
+            assert_eq!(window.is_visible(), Some(false));
         }
     }
 }

@@ -1,4 +1,4 @@
-use crate::tray::{Tray, TrayAction};
+use crate::tray::{Tray, TrayAction, TrayEvents};
 use eframe::egui::{self, Color32, RichText};
 use std::{path::PathBuf, sync::mpsc, time::Duration};
 use toolboxcraft_core::{
@@ -89,7 +89,7 @@ fn primary_action(ui: &mut egui::Ui, enabled: bool, label: &str) -> egui::Respon
 pub struct Toolbox {
     handle: EngineHandle,
     events: mpsc::Receiver<Event>,
-    tray: Option<Tray>,
+    tray: Option<Box<dyn TrayEvents>>,
     window: crate::window::WindowControl,
     tray_attempted: bool,
     search: String,
@@ -103,6 +103,7 @@ pub struct Toolbox {
     screenshot: Option<PathBuf>,
     frames: u32,
     quit: bool,
+    last_state: State,
 }
 impl Toolbox {
     pub fn new(
@@ -162,12 +163,22 @@ impl Toolbox {
             screenshot,
             frames: 0,
             quit: false,
+            last_state: State::default(),
         }
     }
     fn send(&self, command: Command) {
         if !self.preview {
             let _ = self.handle.commands.send(command);
         }
+    }
+    fn request_quit(&mut self, ctx: &egui::Context) {
+        if !self.quit {
+            tracing::info!("Closing ToolboxCraft");
+        }
+        self.quit = true;
+        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+        ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
     }
     fn row(&mut self, ui: &mut egui::Ui, app: App, state: &State, target: Target) {
         let installation = state.installations.get(app.id);
@@ -496,6 +507,20 @@ impl Toolbox {
 }
 impl eframe::App for Toolbox {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Close is processed over multiple frames by eframe. Keep requesting it
+        // without rendering or touching shared state until the event loop exits.
+        if self.quit || self.window.quit_requested() {
+            self.request_quit(ctx);
+            return;
+        }
+        if ctx.input(|i| i.viewport().close_requested()) {
+            if self.tray.is_some() {
+                // Hiding must finish before tray refresh, state reads, or rendering.
+                ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+                self.window.hide();
+            }
+            return;
+        }
         self.frames += 1;
         if self.frames == 5
             && !self.preview
@@ -506,7 +531,7 @@ impl eframe::App for Toolbox {
         if !self.tray_attempted && !self.preview {
             self.tray_attempted = true;
             match Tray::new(self.handle.clone(), self.window.clone()) {
-                Ok(tray) => self.tray = Some(tray),
+                Ok(tray) => self.tray = Some(Box::new(tray)),
                 Err(err) => tracing::warn!("Tray unavailable: {err}"),
             };
             if self.background && self.tray.is_some() {
@@ -523,8 +548,8 @@ impl eframe::App for Toolbox {
                 }
                 Event::SelfUpdate(update) => self.update = update,
                 Event::RestartReady => {
-                    self.quit = true;
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                    self.request_quit(ctx);
+                    return;
                 }
             }
         }
@@ -532,18 +557,22 @@ impl eframe::App for Toolbox {
             for action in tray.poll() {
                 match action {
                     TrayAction::Open => {
-                        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
-                        ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
-                        ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+                        // WindowControl already restores at callback time. Replaying
+                        // a queued Open here could undo a more recent X-button hide.
                     }
                     TrayAction::Quit => {
-                        self.quit = true;
-                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                        self.request_quit(ctx);
+                        return;
                     }
                 }
             }
         }
-        let state = self.handle.state.lock().unwrap().clone();
+        // Persistence holds the engine lock during disk I/O. Keep displaying the
+        // last snapshot so a slow write cannot block the native message loop.
+        if let Ok(state) = self.handle.state.try_lock() {
+            self.last_state.clone_from(&state);
+        }
+        let state = self.last_state.clone();
         let target = Target::current().unwrap();
         let preference = match state.settings.theme {
             Theme::System => egui::ThemePreference::System,
@@ -571,10 +600,6 @@ impl eframe::App for Toolbox {
             s.spacing.scroll = egui::style::ScrollStyle::solid();
             s.spacing.scroll.bar_width = 6.0;
         });
-        if ctx.input(|i| i.viewport().close_requested()) && !self.quit && self.tray.is_some() {
-            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
-        }
         if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
             self.settings_open = false;
             self.details = None;
@@ -633,7 +658,7 @@ impl eframe::App for Toolbox {
                         ui.horizontal(|ui| {
                             let (rect, _) = ui
                                 .allocate_exact_size(egui::vec2(16.0, 18.0), egui::Sense::hover());
-                            let stroke = egui::Stroke::new(1.4, muted(ui));
+                            let stroke = egui::Stroke::new(1.4_f32, muted(ui));
                             let center = rect.min + egui::vec2(6.0, 7.0);
                             ui.painter().circle_stroke(center, 4.5, stroke);
                             ui.painter().line_segment(
@@ -891,6 +916,166 @@ mod tests {
     }
     fn harness() -> Harness<'static, Toolbox> {
         harness_with_commands().0
+    }
+    struct TestTray(mpsc::Receiver<TrayAction>);
+    impl TrayEvents for TestTray {
+        fn poll(&mut self) -> Vec<TrayAction> {
+            self.0.try_iter().collect()
+        }
+    }
+    fn attach_test_tray(h: &mut Harness<'_, Toolbox>) -> mpsc::Sender<TrayAction> {
+        let (sender, receiver) = mpsc::channel();
+        h.state_mut().tray = Some(Box::new(TestTray(receiver)));
+        h.state_mut().tray_attempted = true;
+        sender
+    }
+    fn close_input(h: &mut Harness<'_, Toolbox>) {
+        h.input_mut()
+            .viewports
+            .get_mut(&egui::ViewportId::ROOT)
+            .unwrap()
+            .events
+            .push(egui::ViewportEvent::Close);
+    }
+    #[test]
+    fn x_button_hides_before_busy_engine_state_and_normal_frames_keep_cached_state() {
+        let mut h = harness();
+        let _actions = attach_test_tray(&mut h);
+        let state = h.state().handle.state.clone();
+        let (locked, ready) = mpsc::channel();
+        let (release, released) = mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let _guard = state.lock().unwrap();
+            locked.send(()).unwrap();
+            released.recv_timeout(Duration::from_secs(2)).is_ok()
+        });
+        ready.recv().unwrap();
+        close_input(&mut h);
+        h.step();
+        let commands = &h.output().viewport_output[&egui::ViewportId::ROOT].commands;
+        assert!(commands.contains(&egui::ViewportCommand::CancelClose));
+        assert!(commands.contains(&egui::ViewportCommand::Visible(false)));
+        assert!(!commands.contains(&egui::ViewportCommand::Close));
+        assert!(!h.state().quit);
+        h.input_mut()
+            .viewports
+            .get_mut(&egui::ViewportId::ROOT)
+            .unwrap()
+            .events
+            .clear();
+        h.step();
+        let _ = release.send(());
+        assert!(
+            worker.join().unwrap(),
+            "X or redraw waited for engine state"
+        );
+        assert!(h.query_by_label("PhotoCraft").is_some());
+        assert_eq!(h.state().last_state.installations.len(), 3);
+    }
+    #[test]
+    fn queued_tray_open_does_not_reopen_after_x_and_quit_takes_priority_over_x() {
+        let mut h = harness();
+        let actions = attach_test_tray(&mut h);
+        h.state().window.signal(&actions, TrayAction::Open);
+        close_input(&mut h);
+        h.step();
+        let commands = &h.output().viewport_output[&egui::ViewportId::ROOT].commands;
+        assert_eq!(
+            commands.iter().rev().find_map(|command| match command {
+                egui::ViewportCommand::Visible(visible) => Some(*visible),
+                _ => None,
+            }),
+            Some(false)
+        );
+        h.input_mut()
+            .viewports
+            .get_mut(&egui::ViewportId::ROOT)
+            .unwrap()
+            .events
+            .clear();
+        h.step();
+        let commands = &h.output().viewport_output[&egui::ViewportId::ROOT].commands;
+        assert!(!commands.contains(&egui::ViewportCommand::Visible(true)));
+        h.state().window.signal(&actions, TrayAction::Quit);
+        close_input(&mut h);
+        h.step();
+        let commands = &h.output().viewport_output[&egui::ViewportId::ROOT].commands;
+        assert!(commands.contains(&egui::ViewportCommand::Close));
+        assert!(!commands.contains(&egui::ViewportCommand::CancelClose));
+    }
+    #[test]
+    fn x_button_without_a_tray_allows_normal_exit() {
+        let mut h = harness();
+        close_input(&mut h);
+        h.step();
+        let commands = &h.output().viewport_output[&egui::ViewportId::ROOT].commands;
+        assert!(!commands.contains(&egui::ViewportCommand::CancelClose));
+        assert!(!commands.contains(&egui::ViewportCommand::Visible(false)));
+    }
+    #[test]
+    fn quit_does_not_wait_for_busy_engine_state() {
+        for source in ["restart", "tray", "closing"] {
+            let mut h = harness();
+            let (actions, _receiver) = mpsc::channel();
+            match source {
+                "tray" => h.state().window.signal(&actions, TrayAction::Quit),
+                "restart" => {
+                    let (events, receiver) = mpsc::channel();
+                    h.state_mut().events = receiver;
+                    events.send(Event::RestartReady).unwrap();
+                }
+                _ => h.state_mut().quit = true,
+            }
+            let state = h.state().handle.state.clone();
+            let (locked, ready) = mpsc::channel();
+            let (release, released) = mpsc::channel();
+            let worker = std::thread::spawn(move || {
+                let _guard = state.lock().unwrap();
+                locked.send(()).unwrap();
+                // A timeout makes a regression fail instead of hanging the test suite.
+                released.recv_timeout(Duration::from_secs(2)).is_ok()
+            });
+            ready.recv().unwrap();
+            h.step();
+            let _ = release.send(());
+            assert!(
+                worker.join().unwrap(),
+                "{source} quit waited for engine state"
+            );
+            assert!(h.state().quit);
+            let commands = &h.output().viewport_output[&egui::ViewportId::ROOT].commands;
+            assert!(commands.contains(&egui::ViewportCommand::Close));
+            assert!(!commands.contains(&egui::ViewportCommand::CancelClose));
+        }
+    }
+    #[test]
+    fn quit_overrides_a_pending_hide_and_stays_active_through_the_close_frame() {
+        let mut h = harness();
+        let (actions, _receiver) = mpsc::channel();
+        h.ctx
+            .send_viewport_cmd(egui::ViewportCommand::Visible(false));
+        h.state().window.signal(&actions, TrayAction::Quit);
+        for _ in 0..2 {
+            let viewport = h
+                .input_mut()
+                .viewports
+                .get_mut(&egui::ViewportId::ROOT)
+                .unwrap();
+            viewport.minimized = Some(true);
+            viewport.events.push(egui::ViewportEvent::Close);
+            h.step();
+            let commands = &h.output().viewport_output[&egui::ViewportId::ROOT].commands;
+            assert_eq!(
+                commands.iter().rev().find_map(|command| match command {
+                    egui::ViewportCommand::Visible(visible) => Some(*visible),
+                    _ => None,
+                }),
+                Some(true)
+            );
+            assert!(commands.contains(&egui::ViewportCommand::Minimized(false)));
+            assert!(commands.contains(&egui::ViewportCommand::Close));
+            assert!(!commands.contains(&egui::ViewportCommand::CancelClose));
+        }
     }
     #[test]
     fn rows_launch_and_nested_update_controls_do_not_launch() {

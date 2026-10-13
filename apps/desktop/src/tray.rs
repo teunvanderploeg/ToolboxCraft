@@ -6,6 +6,9 @@ pub enum TrayAction {
     Open,
     Quit,
 }
+pub trait TrayEvents {
+    fn poll(&mut self) -> Vec<TrayAction>;
+}
 pub fn window_icon() -> egui::IconData {
     let image = image::load_from_memory(include_bytes!("../../../assets/icons/toolboxcraft.png"))
         .unwrap()
@@ -57,20 +60,17 @@ impl Tray {
             fingerprint: vec![],
             actions,
         };
-        result.refresh()?;
-        Ok(result)
-    }
-    fn refresh(&mut self) -> anyhow::Result<()> {
-        use tray_icon::menu::{Menu, MenuItem, PredefinedMenuItem};
-        let ids: Vec<_> = self
+        let ids = result
             .handle
             .state
-            .lock()
-            .unwrap()
-            .installations
-            .keys()
-            .cloned()
-            .collect();
+            .try_lock()
+            .map(|state| state.installations.keys().cloned().collect())
+            .unwrap_or_default();
+        result.refresh(ids)?;
+        Ok(result)
+    }
+    fn refresh(&mut self, ids: Vec<String>) -> anyhow::Result<()> {
+        use tray_icon::menu::{Menu, MenuItem, PredefinedMenuItem};
         let menu = Menu::new();
         menu.append(&MenuItem::with_id("open", "Open ToolboxCraft", true, None))?;
         menu.append(&PredefinedMenuItem::separator())?;
@@ -91,20 +91,23 @@ impl Tray {
         self.fingerprint = ids;
         Ok(())
     }
-    pub fn poll(&mut self) -> Vec<TrayAction> {
-        let ids: Vec<_> = self
+}
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+impl TrayEvents for Tray {
+    fn poll(&mut self) -> Vec<TrayAction> {
+        let actions: Vec<_> = self.actions.try_iter().collect();
+        let ids = self
             .handle
             .state
-            .lock()
-            .unwrap()
-            .installations
-            .keys()
-            .cloned()
-            .collect();
-        if ids != self.fingerprint {
-            let _ = self.refresh();
+            .try_lock()
+            .ok()
+            .map(|state| state.installations.keys().cloned().collect::<Vec<_>>());
+        if let Some(ids) = ids
+            && ids != self.fingerprint
+        {
+            let _ = self.refresh(ids);
         }
-        self.actions.try_iter().collect()
+        actions
     }
 }
 #[cfg(any(target_os = "macos", target_os = "windows"))]
@@ -247,7 +250,7 @@ mod linux {
         fn icon_pixmap(&self) -> Vec<ksni::Icon> {
             let p = window_icon();
             let mut bytes = p.rgba;
-            for pixel in bytes.chunks_exact_mut(4) {
+            for pixel in bytes.as_chunks_mut::<4>().0 {
                 pixel.rotate_right(1);
             }
             vec![ksni::Icon {
@@ -323,7 +326,9 @@ mod linux {
             .spawn()?;
             Ok(Self { handle, actions })
         }
-        pub fn poll(&mut self) -> Vec<TrayAction> {
+    }
+    impl TrayEvents for LinuxTray {
+        fn poll(&mut self) -> Vec<TrayAction> {
             self.handle.update(|_| {});
             self.actions.try_iter().collect()
         }

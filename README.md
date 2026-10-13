@@ -114,6 +114,8 @@ Self-update is supported for packaged `.app` bundles, Linux AppImages, and insta
 
 Logs rotate daily under the data directory's `logs` folder. Set `RUST_LOG=debug` for more detail. GitHub failures retain cached releases and installed apps. Release details indicate cached metadata older than six hours. Checks and downloads use system proxy settings through reqwest.
 
+For Windows exit problems, see the [shutdown regression checks](docs/windows-shutdown.md) for reproduction steps and shutdown log markers.
+
 This first release does not include parallel versions, prerelease channels, remote management, document indexing, or user-selected rollback. Platform integration code exists for all three systems; native runtime validation must be performed on the respective OS.
 
 ToolboxCraft is an independent project. It is not affiliated with JetBrains or Artcraft. See [ATTRIBUTION.md](ATTRIBUTION.md) for bundled artwork and fonts.

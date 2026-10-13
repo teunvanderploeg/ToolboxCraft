@@ -95,7 +95,9 @@ fn main() -> anyhow::Result<()> {
         }),
     )
     .map_err(|e| anyhow::anyhow!("{e}"))?;
+    tracing::info!("Window event loop stopped; shutting down background workers");
     let _ = close_handle.commands.send(Command::Shutdown);
     runtime.shutdown_timeout(std::time::Duration::from_secs(3));
+    tracing::info!("ToolboxCraft shutdown complete");
     Ok(())
 }
