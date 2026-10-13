@@ -33,21 +33,27 @@ pub fn stage(native: &Native, package: &Path) -> Result<()> {
             output.status.success(),
             "Updated ToolboxCraft bundle has an invalid signature"
         );
-        // Require the installed app's publisher, independently of the manifest signature.
-        let identity = |path: &Path| -> Result<String> {
+        // The core authenticates every update using the pinned Ed25519 key.
+        // Retain Apple publisher matching when the installed app has a team,
+        // while allowing our authenticated ad-hoc builds to update too.
+        let identity = |path: &Path| -> Result<Option<String>> {
             let o = Command::new("/usr/bin/codesign")
                 .args(["-dv", "--verbose=4"])
                 .arg(path)
                 .output()?;
+            ensure!(o.status.success(), "Cannot read macOS code signature");
             let text = String::from_utf8_lossy(&o.stderr);
-            text.lines()
+            Ok(text
+                .lines()
                 .find_map(|l| l.strip_prefix("TeamIdentifier="))
                 .filter(|s| *s != "not set")
-                .map(str::to_owned)
-                .context("Self-update requires a publisher-signed macOS app")
+                .map(str::to_owned))
         };
         ensure!(
-            identity(bundle)? == identity(&replacement)?,
+            publisher_matches(
+                identity(bundle)?.as_deref(),
+                identity(&replacement)?.as_deref()
+            ),
             "Updated ToolboxCraft has a different publisher"
         );
         (
@@ -109,6 +115,7 @@ pub fn stage(native: &Native, package: &Path) -> Result<()> {
         fs::set_permissions(&helper, fs::Permissions::from_mode(0o755))?;
     }
     Command::new(helper)
+        .current_dir(&native.store.root)
         .arg(std::process::id().to_string())
         .arg(target)
         .arg(replacement)
@@ -168,16 +175,28 @@ pub fn apply(args: &[String]) -> Result<()> {
     } else {
         target.join(launcher)
     };
-    if let Err(err) = Command::new(&launch_path).spawn() {
+    if let Err(err) = Command::new(&launch_path)
+        .current_dir(
+            target
+                .parent()
+                .context("Installation has no parent directory")?,
+        )
+        .spawn()
+    {
         remove_path(target)?;
         fs::rename(&backup, target)?;
-        let _ = Command::new(&launch_path).spawn();
+        let _ = Command::new(&launch_path)
+            .current_dir(target.parent().unwrap())
+            .spawn();
         return Err(err.into());
     }
     // Keep the last working copy for recovery from a startup failure.
     // The replacement may be an AppImage launched by a mounted old runtime.
     remove_path(replacement)?;
     Ok(())
+}
+fn publisher_matches(installed: Option<&str>, replacement: Option<&str>) -> bool {
+    installed.is_none() || installed == replacement
 }
 fn copy_tree(source: &Path, target: &Path) -> Result<()> {
     fs::create_dir_all(target)?;
@@ -223,10 +242,20 @@ pub fn confirm_startup() -> Result<()> {
     Ok(())
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
+    #[test]
+    fn signed_updates_support_ad_hoc_builds_and_preserve_existing_apple_publisher() {
+        assert!(publisher_matches(None, None));
+        assert!(publisher_matches(None, Some("TEAM")));
+        assert!(publisher_matches(Some("TEAM"), Some("TEAM")));
+        assert!(!publisher_matches(Some("TEAM"), None));
+        assert!(!publisher_matches(Some("TEAM"), Some("OTHER")));
+    }
+    #[cfg(unix)]
     #[test]
     fn helper_restores_working_folder_when_replacement_cannot_launch() {
         let d = tempfile::tempdir().unwrap();
@@ -251,5 +280,52 @@ mod tests {
         assert!(result.is_err());
         assert_eq!(fs::read(target.join("working")).unwrap(), b"old files");
         assert!(!target.with_extension("toolboxcraft-backup").exists());
+    }
+    #[cfg(unix)]
+    #[test]
+    fn helper_replaces_and_restarts_both_folder_and_appimage_installations() {
+        for is_file in [false, true] {
+            let d = tempfile::tempdir().unwrap();
+            let target = d.path().join(if is_file {
+                "ToolboxCraft.AppImage"
+            } else {
+                "ToolboxCraft"
+            });
+            let replacement = d.path().join("replacement");
+            let marker = d.path().join("restarted");
+            if is_file {
+                fs::copy("/usr/bin/true", &target).unwrap();
+            } else {
+                fs::create_dir_all(&target).unwrap();
+                fs::write(target.join("old"), b"working files").unwrap();
+                fs::create_dir_all(&replacement).unwrap();
+            }
+            let executable = if is_file {
+                replacement.clone()
+            } else {
+                replacement.join("toolboxcraft")
+            };
+            fs::write(
+                &executable,
+                format!("#!/bin/sh\ntouch '{}'\n", marker.display()),
+            )
+            .unwrap();
+            fs::set_permissions(&executable, fs::Permissions::from_mode(0o755)).unwrap();
+            apply(&[
+                u32::MAX.to_string(),
+                target.display().to_string(),
+                replacement.display().to_string(),
+                if is_file { "--file" } else { "toolboxcraft" }.into(),
+            ])
+            .unwrap();
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while !marker.exists() && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            assert!(marker.exists(), "The replacement must actually restart");
+            assert!(target.exists());
+            assert!(target.with_extension("toolboxcraft-backup").exists());
+            assert!(!replacement.exists());
+        }
     }
 }

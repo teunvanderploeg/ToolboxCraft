@@ -14,6 +14,7 @@ use tokio_util::sync::CancellationToken;
 pub struct Releases {
     client: Client,
     api: String,
+    pub(crate) github_origin: String,
 }
 impl Releases {
     pub fn new() -> Result<Self> {
@@ -34,7 +35,16 @@ impl Releases {
         Ok(Self {
             client,
             api: "https://api.github.com".into(),
+            github_origin: "https://github.com".into(),
         })
+    }
+    #[cfg(test)]
+    pub(crate) fn test_server(origin: String) -> Self {
+        Self {
+            client: Client::new(),
+            api: origin.clone(),
+            github_origin: origin,
+        }
     }
     pub async fn latest(&self, app: App, cache: Option<&CachedRelease>) -> Result<CachedRelease> {
         let mut request =
@@ -321,6 +331,7 @@ mod tests {
         let mut client = Releases {
             client: Client::new(),
             api: fixture("429 Too Many Requests", "Content-Length: 0\r\n", ""),
+            github_origin: "https://github.com".into(),
         };
         assert!(
             client
@@ -351,6 +362,7 @@ mod tests {
         let client = Releases {
             client: Client::new(),
             api: String::new(),
+            github_origin: "https://github.com".into(),
         };
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("package");

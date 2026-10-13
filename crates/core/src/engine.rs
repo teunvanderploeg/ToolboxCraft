@@ -43,6 +43,7 @@ pub enum Event {
     Changed,
     Notice(String),
     SelfUpdate(Option<SelfUpdate>),
+    SelfUpdateStatus(String),
     RestartReady,
 }
 #[derive(Clone)]
@@ -61,7 +62,22 @@ pub struct Engine {
     installs: Arc<Semaphore>,
     cancellations: Arc<Mutex<BTreeMap<String, CancellationToken>>>,
     update: Arc<Mutex<Option<SelfUpdate>>>,
+    self_update_attempt: Mutex<Option<String>>,
     stop: CancellationToken,
+}
+const SELF_UPDATE_JOB: &str = "toolboxcraft";
+// Reserve the same job registry as app installations before downloading. This
+// prevents duplicate updates and new app operations during a launcher restart.
+struct SelfUpdateReservation {
+    jobs: Arc<Mutex<BTreeMap<String, CancellationToken>>>,
+    restarting: bool,
+}
+impl Drop for SelfUpdateReservation {
+    fn drop(&mut self) {
+        if !self.restarting {
+            self.jobs.lock().unwrap().remove(SELF_UPDATE_JOB);
+        }
+    }
 }
 impl Engine {
     pub fn start(
@@ -97,6 +113,7 @@ impl Engine {
             installs: Arc::new(Semaphore::new(1)),
             cancellations: Arc::new(Mutex::new(BTreeMap::new())),
             update: Arc::new(Mutex::new(None)),
+            self_update_attempt: Mutex::new(None),
             stop: CancellationToken::new(),
         });
         runtime.spawn(async move {
@@ -108,10 +125,10 @@ impl Engine {
             loop {
                 if check_task.as_ref().is_some_and(|t| t.is_finished()) { checking = false; check_task = None; }
                 tokio::select! {
-                    _ = timer.tick() => { if !checking { checking = true; let e = engine.clone(); check_task = Some(tokio::spawn(async move { e.check().await; e.check_self().await; })); } }
-                    _ = rescan.tick() => { engine.rescan(); engine.auto_updates(); }
+                    _ = timer.tick() => { if !checking { checking = true; let e = engine.clone(); check_task = Some(tokio::spawn(async move { tokio::join!(e.check_self(), e.check()); })); } }
+                    _ = rescan.tick() => { engine.rescan(); engine.queue_self_update(false); engine.auto_updates(); }
                     command = rx.recv() => match command {
-                        Some(Command::Check) => { if !checking { checking = true; let e = engine.clone(); check_task = Some(tokio::spawn(async move { e.check().await; })); } }
+                        Some(Command::Check) => { if !checking { checking = true; let e = engine.clone(); check_task = Some(tokio::spawn(async move { tokio::join!(e.check_self(), e.check()); })); } }
                         Some(Command::Install(id)) => engine.queue(id),
                         Some(Command::Cancel(id)) => { if let Some(c) = engine.cancellations.lock().unwrap().get(&id) { c.cancel(); } }
                         Some(Command::Launch(id)) => {
@@ -133,7 +150,7 @@ impl Engine {
                             }
                         }
                         Some(Command::CheckSelfUpdate) => { let e = engine.clone(); tokio::spawn(async move { e.check_self().await; }); }
-                        Some(Command::ApplySelfUpdate) => { let e = engine.clone(); tokio::spawn(async move { if let Err(err) = e.apply_self().await { e.notice(err); } }); }
+                        Some(Command::ApplySelfUpdate) => { engine.queue_self_update(true); }
                         Some(Command::Shutdown) | None => { engine.stop.cancel(); for token in engine.cancellations.lock().unwrap().values() { token.cancel(); } break; }
                     }
                 }
@@ -244,7 +261,7 @@ impl Engine {
         // A token also guards the interval before the persisted operation appears.
         let cancel = {
             let mut jobs = self.cancellations.lock().unwrap();
-            if jobs.contains_key(&id) {
+            if jobs.contains_key(&id) || jobs.contains_key(SELF_UPDATE_JOB) {
                 return;
             }
             let token = self.stop.child_token();
@@ -376,7 +393,7 @@ impl Engine {
         {
             let mut jobs = self.cancellations.lock().unwrap();
             anyhow::ensure!(
-                !jobs.contains_key(id),
+                !jobs.contains_key(id) && !jobs.contains_key(SELF_UPDATE_JOB),
                 "Wait for the current operation to finish"
             );
             jobs.insert(id.into(), self.stop.child_token());
@@ -423,31 +440,92 @@ impl Engine {
         }
         result
     }
-    async fn check_self(&self) {
+    async fn check_self(self: &Arc<Self>) {
+        let _ = self.events.send(Event::SelfUpdateStatus(
+            "Checking for ToolboxCraft updates…".into(),
+        ));
         match self_update::check(&self.client, self.target).await {
             Ok(update) => {
                 *self.update.lock().unwrap() = update.clone();
+                let status = update
+                    .as_ref()
+                    .map(|u| format!("Version {} is available", u.manifest.version))
+                    .unwrap_or_else(|| "ToolboxCraft is up to date".into());
+                let _ = self.events.send(Event::SelfUpdateStatus(status));
                 let _ = self.events.send(Event::SelfUpdate(update));
+                self.queue_self_update(false);
             }
-            Err(err) => self.notice(format!("ToolboxCraft update check: {err}")),
+            Err(err) => {
+                let _ = self.events.send(Event::SelfUpdateStatus(format!(
+                    "Could not check for updates: {err}"
+                )));
+                self.notice(format!("ToolboxCraft update check: {err}"));
+            }
         }
     }
-    async fn apply_self(&self) -> Result<()> {
-        let _permit = self.installs.acquire().await?;
-        anyhow::ensure!(
-            self.cancellations.lock().unwrap().is_empty(),
-            "Wait for application operations to finish before updating ToolboxCraft"
-        );
-        let update = self
-            .update
-            .lock()
-            .unwrap()
-            .clone()
-            .context("No ToolboxCraft update is available")?;
+    fn reserve_self_update(&self, manual: bool) -> Option<(SelfUpdate, SelfUpdateReservation)> {
+        if self.stop.is_cancelled()
+            || (!manual && !self.snapshot().settings.auto_update_toolboxcraft)
+        {
+            return None;
+        }
+        let update = self.update.lock().unwrap().clone()?;
+        let mut attempted = self.self_update_attempt.lock().unwrap();
+        if !manual && attempted.as_ref() == Some(&update.manifest.version) {
+            return None;
+        }
+        let mut jobs = self.cancellations.lock().unwrap();
+        if !jobs.is_empty() {
+            if manual {
+                self.notice(
+                    "Wait for application operations to finish before updating ToolboxCraft",
+                );
+            }
+            return None;
+        }
+        jobs.insert(SELF_UPDATE_JOB.into(), self.stop.child_token());
+        *attempted = Some(update.manifest.version.clone());
+        Some((
+            update,
+            SelfUpdateReservation {
+                jobs: self.cancellations.clone(),
+                restarting: false,
+            },
+        ))
+    }
+    fn queue_self_update(self: &Arc<Self>, manual: bool) {
+        let Some((update, reservation)) = self.reserve_self_update(manual) else {
+            return;
+        };
+        let e = self.clone();
+        tokio::spawn(async move {
+            if let Err(err) = e.apply_self(update, reservation).await {
+                let _ = e.events.send(Event::SelfUpdateStatus(format!(
+                    "Update failed: {err}. Use Update and restart to retry."
+                )));
+                e.notice(format!("ToolboxCraft update: {err}"));
+            }
+        });
+    }
+    async fn apply_self(
+        &self,
+        update: SelfUpdate,
+        mut reservation: SelfUpdateReservation,
+    ) -> Result<()> {
+        let _permit = tokio::select! { _ = self.stop.cancelled() => anyhow::bail!("Cancelled"), p = self.installs.acquire() => p? };
+        let _ = self.events.send(Event::SelfUpdateStatus(format!(
+            "Downloading version {}…",
+            update.manifest.version
+        )));
         let path = self.store.root.join("self-update.zip");
         self_update::download(&self.client, &update, &path, &self.stop).await?;
+        anyhow::ensure!(!self.stop.is_cancelled(), "Cancelled");
+        let _ = self.events.send(Event::SelfUpdateStatus(
+            "Installing ToolboxCraft and restarting…".into(),
+        ));
         let platform = self.platform.clone();
         tokio::task::spawn_blocking(move || platform.stage_self_update(&path)).await??;
+        reservation.restarting = true;
         let _ = self.events.send(Event::RestartReady);
         Ok(())
     }
@@ -459,6 +537,129 @@ mod tests {
     use std::sync::atomic::{AtomicBool, Ordering};
     struct TestPlatform {
         running: AtomicBool,
+    }
+    struct UpdatingPlatform {
+        staged: AtomicBool,
+    }
+    impl Platform for UpdatingPlatform {
+        fn recover(&self) -> Result<BTreeMap<String, Installation>> {
+            Ok(BTreeMap::new())
+        }
+        fn detect(&self, _: App) -> Option<Installation> {
+            None
+        }
+        fn running(&self, _: &Installation) -> bool {
+            false
+        }
+        fn install(&self, _: App, _: &str, _: &Path) -> Result<Installation> {
+            anyhow::bail!("Unexpected app install")
+        }
+        fn remove(&self, _: App, _: &Installation) -> Result<()> {
+            anyhow::bail!("Unexpected app removal")
+        }
+        fn launch(&self, _: App, _: &Installation) -> Result<()> {
+            Ok(())
+        }
+        fn launch_at_login(&self, _: bool) -> Result<()> {
+            Ok(())
+        }
+        fn notify(&self, _: &str, _: &str) {}
+        fn stage_self_update(&self, path: &Path) -> Result<()> {
+            anyhow::ensure!(
+                std::fs::read(path)? == b"verified update archive",
+                "Wrong package bytes"
+            );
+            self.staged.store(true, Ordering::SeqCst);
+            Ok(())
+        }
+    }
+    #[tokio::test]
+    async fn signed_release_is_detected_downloaded_verified_and_automatically_staged() {
+        use base64::Engine as _;
+        use ed25519_dalek::{Signer, SigningKey};
+        use sha2::{Digest, Sha256};
+        use std::io::{Read, Write};
+        let key = SigningKey::from_bytes(&[42; 32]);
+        let bytes = b"verified update archive";
+        let manifest = serde_json::to_vec(&self_update::UpdateManifest {
+            version: "0.1.8".into(),
+            packages: BTreeMap::from([(
+                "linux-x86_64".into(),
+                self_update::UpdatePackage {
+                    file: "toolboxcraft-0.1.8-linux-x86_64-update.zip".into(),
+                    sha256: hex::encode(Sha256::digest(bytes)),
+                    size: bytes.len() as u64,
+                },
+            )]),
+        })
+        .unwrap();
+        let signature =
+            base64::engine::general_purpose::STANDARD.encode(key.sign(&manifest).to_bytes());
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            for body in [manifest, signature.into_bytes(), bytes.to_vec()] {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut request = [0; 4096];
+                assert!(stream.read(&mut request).unwrap() > 0);
+                write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: {}\r\n\r\n",
+                    body.len()
+                )
+                .unwrap();
+                stream.write_all(&body).unwrap();
+            }
+        });
+        let temp = tempfile::tempdir().unwrap();
+        let mut e = engine(
+            &temp,
+            Arc::new(TestPlatform {
+                running: AtomicBool::new(false),
+            }),
+        );
+        let platform = Arc::new(UpdatingPlatform {
+            staged: AtomicBool::new(false),
+        });
+        let (sender, events) = mpsc::channel();
+        let unique = Arc::get_mut(&mut e).unwrap();
+        unique.client = Releases::test_server(origin.clone());
+        unique.platform = platform.clone();
+        unique.events = sender;
+        let update = self_update::check_at(
+            &e.client,
+            e.target,
+            "publisher/repo",
+            &hex::encode(key.verifying_key().as_bytes()),
+            &origin,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        *e.update.lock().unwrap() = Some(update);
+        e.queue_self_update(false);
+        e.queue_self_update(false);
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        let mut restarted = false;
+        while tokio::time::Instant::now() < deadline {
+            if events
+                .try_iter()
+                .any(|event| matches!(event, Event::RestartReady))
+            {
+                restarted = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(restarted);
+        assert!(platform.staged.load(Ordering::SeqCst));
+        assert!(
+            e.cancellations
+                .lock()
+                .unwrap()
+                .contains_key(SELF_UPDATE_JOB)
+        );
+        server.join().unwrap();
     }
     impl Platform for TestPlatform {
         fn recover(&self) -> Result<BTreeMap<String, Installation>> {
@@ -503,8 +704,74 @@ mod tests {
             installs: Arc::new(Semaphore::new(1)),
             cancellations: Arc::new(Mutex::new(BTreeMap::new())),
             update: Arc::new(Mutex::new(None)),
+            self_update_attempt: Mutex::new(None),
             stop: CancellationToken::new(),
         })
+    }
+    fn available_update(e: &Engine) {
+        *e.update.lock().unwrap() = Some(SelfUpdate {
+            manifest: self_update::UpdateManifest {
+                version: "0.1.8".into(),
+                packages: BTreeMap::new(),
+            },
+            repo: "teunvanderploeg/ToolboxCraft".into(),
+            package: self_update::UpdatePackage {
+                file: "toolboxcraft-0.1.8-linux-x86_64-update.zip".into(),
+                sha256: "00".repeat(32),
+                size: 1,
+            },
+        });
+    }
+    #[test]
+    fn automatic_self_update_waits_for_jobs_and_reserves_restart_exclusively() {
+        let temp = tempfile::tempdir().unwrap();
+        let e = engine(
+            &temp,
+            Arc::new(TestPlatform {
+                running: AtomicBool::new(false),
+            }),
+        );
+        available_update(&e);
+        e.cancellations
+            .lock()
+            .unwrap()
+            .insert("photocraft".into(), CancellationToken::new());
+        assert!(e.reserve_self_update(false).is_none());
+        assert!(e.self_update_attempt.lock().unwrap().is_none());
+        e.cancellations.lock().unwrap().clear();
+        let (_, mut reservation) = e.reserve_self_update(false).unwrap();
+        assert!(e.reserve_self_update(true).is_none());
+        e.queue("photocraft".into());
+        assert!(!e.cancellations.lock().unwrap().contains_key("photocraft"));
+        reservation.restarting = true;
+        drop(reservation);
+        assert!(
+            e.cancellations
+                .lock()
+                .unwrap()
+                .contains_key(SELF_UPDATE_JOB)
+        );
+    }
+    #[test]
+    fn self_update_opt_out_failure_retry_and_shutdown_are_respected() {
+        let temp = tempfile::tempdir().unwrap();
+        let e = engine(
+            &temp,
+            Arc::new(TestPlatform {
+                running: AtomicBool::new(false),
+            }),
+        );
+        available_update(&e);
+        e.state.lock().unwrap().settings.auto_update_toolboxcraft = false;
+        assert!(e.reserve_self_update(false).is_none());
+        let (_, reservation) = e.reserve_self_update(true).unwrap();
+        drop(reservation); // A failed/cancelled task releases the operation reservation.
+        assert!(e.cancellations.lock().unwrap().is_empty());
+        e.state.lock().unwrap().settings.auto_update_toolboxcraft = true;
+        assert!(e.reserve_self_update(false).is_none()); // No automatic retry loop.
+        assert!(e.reserve_self_update(true).is_some()); // Explicit retry still works.
+        e.stop.cancel();
+        assert!(e.reserve_self_update(true).is_none());
     }
     #[tokio::test]
     async fn waits_for_an_external_process_and_cancellation_preserves_installed_state() {

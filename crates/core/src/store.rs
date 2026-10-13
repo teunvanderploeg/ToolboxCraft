@@ -103,6 +103,31 @@ pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
 mod tests {
     use super::*;
     #[test]
+    fn existing_settings_enable_launcher_updates_without_changing_app_preferences() {
+        let d = tempfile::tempdir().unwrap();
+        let store = Store::new(d.path()).unwrap();
+        let mut state = State::default();
+        state.settings.auto_update = false;
+        state.settings.disabled_apps.push("photocraft".into());
+        let mut old = serde_json::to_value(&state).unwrap();
+        old["settings"]
+            .as_object_mut()
+            .unwrap()
+            .remove("auto_update_toolboxcraft");
+        fs::write(
+            store.root.join("state.json"),
+            serde_json::to_vec(&old).unwrap(),
+        )
+        .unwrap();
+        let mut migrated = store.load().unwrap();
+        assert!(migrated.settings.auto_update_toolboxcraft);
+        assert!(!migrated.settings.auto_update);
+        assert_eq!(migrated.settings.disabled_apps, ["photocraft"]);
+        migrated.settings.auto_update_toolboxcraft = false;
+        store.save(&migrated).unwrap();
+        assert!(!store.load().unwrap().settings.auto_update_toolboxcraft);
+    }
+    #[test]
     fn interruption_preserves_installs_and_releases_lock() {
         let d = tempfile::tempdir().unwrap();
         let store = Store::new(d.path()).unwrap();

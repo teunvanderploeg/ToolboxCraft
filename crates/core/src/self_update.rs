@@ -27,13 +27,11 @@ pub struct SelfUpdate {
     pub package: UpdatePackage,
 }
 pub fn configuration() -> Option<(&'static str, &'static str)> {
-    match (
-        option_env!("TOOLBOXCRAFT_RELEASE_REPO"),
-        option_env!("TOOLBOXCRAFT_UPDATE_PUBLIC_KEY"),
-    ) {
-        (Some(repo), Some(key)) if !repo.is_empty() && !key.is_empty() => Some((repo, key)),
-        _ => None,
-    }
+    let repo = option_env!("TOOLBOXCRAFT_RELEASE_REPO").unwrap_or("teunvanderploeg/ToolboxCraft");
+    let key = option_env!("TOOLBOXCRAFT_UPDATE_PUBLIC_KEY")
+        .unwrap_or(include_str!("../../../packaging/update-public-key.hex"))
+        .trim();
+    (!repo.is_empty() && !key.is_empty()).then_some((repo, key))
 }
 pub fn target_key(target: Target) -> &'static str {
     use crate::model::{Arch, Os};
@@ -73,12 +71,31 @@ pub async fn check(client: &Releases, target: Target) -> Result<Option<SelfUpdat
                     .all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c))),
         "Invalid ToolboxCraft release repository"
     );
-    let base = format!("https://github.com/{repo}/releases/latest/download");
+    check_at(
+        client,
+        target,
+        repo,
+        key,
+        &format!("{}/{repo}/releases/latest/download", client.github_origin),
+    )
+    .await
+}
+pub(crate) async fn check_at(
+    client: &Releases,
+    target: Target,
+    repo: &str,
+    key: &str,
+    base: &str,
+) -> Result<Option<SelfUpdate>> {
     let bytes = client.small_file(&format!("{base}/update.json")).await?;
     let signature = client
         .small_file(&format!("{base}/update.json.sig"))
         .await?;
     let manifest = verify_manifest(&bytes, &signature, key)?;
+    ensure!(
+        semver::Version::parse(&manifest.version)?.pre.is_empty(),
+        "ToolboxCraft update must be a stable release"
+    );
     if !newer(&manifest.version, env!("CARGO_PKG_VERSION")) {
         return Ok(None);
     }
@@ -109,8 +126,8 @@ pub async fn download(
         .try_into()
         .map_err(|_| anyhow::anyhow!("Invalid update checksum"))?;
     let url = format!(
-        "https://github.com/{}/releases/download/v{}/{}",
-        update.repo, update.manifest.version, update.package.file
+        "{}/{}/releases/download/v{}/{}",
+        client.github_origin, update.repo, update.manifest.version, update.package.file
     );
     client
         .download_url(&url, update.package.size, path, hash, cancel, |_, _| {})
@@ -129,5 +146,14 @@ mod tests {
         let public = hex::encode(key.verifying_key().as_bytes());
         assert!(verify_manifest(bytes, signature.as_bytes(), &public).is_ok());
         assert!(verify_manifest(b"tampered", signature.as_bytes(), &public).is_err());
+        let other = hex::encode(SigningKey::from_bytes(&[8; 32]).verifying_key().as_bytes());
+        assert!(verify_manifest(bytes, signature.as_bytes(), &other).is_err());
+    }
+    #[test]
+    fn default_build_has_a_valid_pinned_publisher_key() {
+        let (repo, key) = configuration().unwrap();
+        assert_eq!(repo, "teunvanderploeg/ToolboxCraft");
+        let bytes: [u8; 32] = hex::decode(key).unwrap().try_into().unwrap();
+        assert!(VerifyingKey::from_bytes(&bytes).is_ok());
     }
 }
