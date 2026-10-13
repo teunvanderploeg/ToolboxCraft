@@ -1,5 +1,7 @@
+use crate::window::WindowControl;
 use eframe::egui;
 use toolboxcraft_core::engine::{Command, EngineHandle};
+#[derive(Clone, Copy)]
 pub enum TrayAction {
     Open,
     Quit,
@@ -23,35 +25,31 @@ pub struct Tray {
 }
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 impl Tray {
-    pub fn new(handle: EngineHandle, ctx: egui::Context) -> anyhow::Result<Self> {
+    pub fn new(handle: EngineHandle, window: WindowControl) -> anyhow::Result<Self> {
         let pixels = window_icon();
         let image = tray_icon::Icon::from_rgba(pixels.rgba, pixels.width, pixels.height)?;
-        let icon = tray_icon::TrayIconBuilder::new()
+        let builder = tray_icon::TrayIconBuilder::new()
             .with_tooltip("ToolboxCraft")
             .with_icon(image)
-            .with_menu(Box::new(tray_icon::menu::Menu::new()))
-            .build()?;
+            .with_menu(Box::new(tray_icon::menu::Menu::new()));
+        // Windows left-click activates the app; right-click opens the menu.
+        // Keep the standard menu-bar behavior on macOS.
+        #[cfg(target_os = "windows")]
+        let builder = builder.with_menu_on_left_click(false);
+        let icon = builder.build()?;
         let (tx, actions) = std::sync::mpsc::channel();
-        let ctx2 = ctx.clone();
+        let window2 = window.clone();
         let tx2 = tx.clone();
         let engine = handle.clone();
         tray_icon::menu::MenuEvent::set_event_handler(Some(
             move |event: tray_icon::menu::MenuEvent| {
-                route_menu(&engine, &tx2, event.id.as_ref());
-                ctx2.request_repaint();
+                route_menu(&engine, &tx2, &window2, event.id.as_ref());
             },
         ));
         tray_icon::TrayIconEvent::set_event_handler(Some(move |event| {
-            if matches!(
-                event,
-                tray_icon::TrayIconEvent::Click {
-                    button: tray_icon::MouseButton::Left,
-                    ..
-                }
-            ) {
-                let _ = tx.send(TrayAction::Open);
+            if activates_window(&event) {
+                window.signal(&tx, TrayAction::Open);
             }
-            ctx.request_repaint();
         }));
         let mut result = Self {
             icon,
@@ -110,13 +108,18 @@ impl Tray {
     }
 }
 #[cfg(any(target_os = "macos", target_os = "windows"))]
-fn route_menu(handle: &EngineHandle, actions: &std::sync::mpsc::Sender<TrayAction>, id: &str) {
+fn route_menu(
+    handle: &EngineHandle,
+    actions: &std::sync::mpsc::Sender<TrayAction>,
+    window: &WindowControl,
+    id: &str,
+) {
     match id {
         "open" => {
-            let _ = actions.send(TrayAction::Open);
+            window.signal(actions, TrayAction::Open);
         }
         "quit" => {
-            let _ = actions.send(TrayAction::Quit);
+            window.signal(actions, TrayAction::Quit);
         }
         "check" => {
             let _ = handle.commands.send(Command::Check);
@@ -130,9 +133,69 @@ fn route_menu(handle: &EngineHandle, actions: &std::sync::mpsc::Sender<TrayActio
         }
     }
 }
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+fn activates_window(event: &tray_icon::TrayIconEvent) -> bool {
+    matches!(
+        event,
+        tray_icon::TrayIconEvent::Click {
+            button: tray_icon::MouseButton::Left,
+            button_state: tray_icon::MouseButtonState::Up,
+            ..
+        } | tray_icon::TrayIconEvent::DoubleClick {
+            button: tray_icon::MouseButton::Left,
+            ..
+        }
+    )
+}
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+impl Drop for Tray {
+    fn drop(&mut self) {
+        tray_icon::menu::MenuEvent::set_event_handler::<fn(tray_icon::menu::MenuEvent)>(None);
+        tray_icon::TrayIconEvent::set_event_handler::<fn(tray_icon::TrayIconEvent)>(None);
+    }
+}
 #[cfg(all(test, any(target_os = "macos", target_os = "windows")))]
 mod tests {
     use super::*;
+    #[test]
+    fn only_left_release_and_left_double_click_activate_the_window() {
+        use tray_icon::{MouseButton, MouseButtonState, Rect, TrayIconEvent};
+        let event = |button, button_state| TrayIconEvent::Click {
+            id: "test".into(),
+            position: Default::default(),
+            rect: Rect::default(),
+            button,
+            button_state,
+        };
+        assert!(activates_window(&event(
+            MouseButton::Left,
+            MouseButtonState::Up
+        )));
+        assert!(!activates_window(&event(
+            MouseButton::Left,
+            MouseButtonState::Down
+        )));
+        assert!(!activates_window(&event(
+            MouseButton::Right,
+            MouseButtonState::Up
+        )));
+        assert!(!activates_window(&event(
+            MouseButton::Middle,
+            MouseButtonState::Up
+        )));
+        assert!(activates_window(&TrayIconEvent::DoubleClick {
+            id: "test".into(),
+            position: Default::default(),
+            rect: Rect::default(),
+            button: MouseButton::Left,
+        }));
+        assert!(!activates_window(&TrayIconEvent::DoubleClick {
+            id: "test".into(),
+            position: Default::default(),
+            rect: Rect::default(),
+            button: MouseButton::Right,
+        }));
+    }
     #[test]
     fn tray_callbacks_route_menu_commands_and_window_actions() {
         let (commands, mut receiver) = tokio::sync::mpsc::unbounded_channel();
@@ -142,17 +205,18 @@ mod tests {
                 toolboxcraft_core::model::State::default(),
             )),
         };
+        let window = WindowControl::for_test(egui::Context::default());
         let (actions, window_events) = std::sync::mpsc::channel();
-        route_menu(&handle, &actions, "check");
+        route_menu(&handle, &actions, &window, "check");
         assert!(matches!(receiver.try_recv().unwrap(), Command::Check));
-        route_menu(&handle, &actions, "launch:photocraft");
+        route_menu(&handle, &actions, &window, "launch:photocraft");
         assert!(matches!(receiver.try_recv().unwrap(),Command::Launch(id) if id=="photocraft"));
-        route_menu(&handle, &actions, "open");
+        route_menu(&handle, &actions, &window, "open");
         assert!(matches!(
             window_events.try_recv().unwrap(),
             TrayAction::Open
         ));
-        route_menu(&handle, &actions, "quit");
+        route_menu(&handle, &actions, &window, "quit");
         assert!(matches!(
             window_events.try_recv().unwrap(),
             TrayAction::Quit
@@ -166,12 +230,11 @@ mod linux {
     struct Service {
         engine: EngineHandle,
         actions: mpsc::Sender<TrayAction>,
-        context: egui::Context,
+        window: WindowControl,
     }
     impl Service {
         fn signal(&self, action: TrayAction) {
-            let _ = self.actions.send(action);
-            self.context.request_repaint();
+            self.window.signal(&self.actions, action);
         }
     }
     impl ksni::Tray for Service {
@@ -249,13 +312,13 @@ mod linux {
         actions: mpsc::Receiver<TrayAction>,
     }
     impl LinuxTray {
-        pub fn new(engine: EngineHandle, context: egui::Context) -> anyhow::Result<Self> {
+        pub fn new(engine: EngineHandle, window: WindowControl) -> anyhow::Result<Self> {
             use ksni::blocking::TrayMethods;
             let (tx, actions) = mpsc::channel();
             let handle = Service {
                 engine,
                 actions: tx,
-                context,
+                window,
             }
             .spawn()?;
             Ok(Self { handle, actions })

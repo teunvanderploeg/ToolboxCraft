@@ -1,6 +1,7 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 mod tray;
 mod ui;
+mod window;
 use std::sync::Arc;
 use toolboxcraft_core::{
     engine::{Command, Engine},

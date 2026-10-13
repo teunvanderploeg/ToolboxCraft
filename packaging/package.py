@@ -5,7 +5,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 DIST = ROOT / 'dist'
 p = argparse.ArgumentParser()
 p.add_argument('--platform', choices=['macos-universal', 'windows-x64', 'windows-arm64', 'linux-x86_64', 'linux-aarch64'], required=True)
-p.add_argument('--version', default='0.1.4')
+p.add_argument('--version', default='0.1.5')
 p.add_argument('--bin-dir', type=pathlib.Path, required=True)
 a = p.parse_args()
 DIST.mkdir(exist_ok=True)

@@ -4356,7 +4356,7 @@ checksum = "06bdbd8cfc056b8d2e2e85f29b56a3bdbecb527cef81eb39e3e7b98af4652770"
 
 [[package]]
 name = "toolboxcraft"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "anyhow",
  "eframe",
@@ -4364,6 +4364,7 @@ dependencies = [
  "egui_kittest",
  "image",
  "ksni",
+ "raw-window-handle",
  "serde_json",
  "sysinfo",
  "tokio",
@@ -4373,12 +4374,13 @@ dependencies = [
  "tracing-appender",
  "tracing-subscriber",
  "tray-icon",
+ "windows-sys 0.61.2",
  "winresource",
 ]
 
 [[package]]
 name = "toolboxcraft-core"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -4400,7 +4402,7 @@ dependencies = [
 
 [[package]]
 name = "toolboxcraft-platform"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "anyhow",
  "directories",

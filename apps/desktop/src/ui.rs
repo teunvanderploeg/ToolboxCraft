@@ -90,6 +90,7 @@ pub struct Toolbox {
     handle: EngineHandle,
     events: mpsc::Receiver<Event>,
     tray: Option<Tray>,
+    window: crate::window::WindowControl,
     tray_attempted: bool,
     search: String,
     settings_open: bool,
@@ -144,6 +145,7 @@ impl Toolbox {
             handle,
             events,
             tray: None,
+            window: crate::window::WindowControl::new(cc),
             tray_attempted: false,
             search: String::new(),
             settings_open: preview && std::env::args().any(|arg| arg == "--preview-settings"),
@@ -503,7 +505,7 @@ impl eframe::App for Toolbox {
         }
         if !self.tray_attempted && !self.preview {
             self.tray_attempted = true;
-            match Tray::new(self.handle.clone(), ctx.clone()) {
+            match Tray::new(self.handle.clone(), self.window.clone()) {
                 Ok(tray) => self.tray = Some(tray),
                 Err(err) => tracing::warn!("Tray unavailable: {err}"),
             };
@@ -531,6 +533,7 @@ impl eframe::App for Toolbox {
                 match action {
                     TrayAction::Open => {
                         ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
                         ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
                     }
                     TrayAction::Quit => {
@@ -571,6 +574,10 @@ impl eframe::App for Toolbox {
         if ctx.input(|i| i.viewport().close_requested()) && !self.quit && self.tray.is_some() {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+        }
+        if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            self.settings_open = false;
+            self.details = None;
         }
         egui::TopBottomPanel::top("header")
             .frame(
@@ -941,6 +948,24 @@ mod tests {
             row.max.x <= 460.0 - 18.0 - 6.0,
             "row overlaps scrollbar: {row:?}"
         );
+    }
+    #[test]
+    fn escape_returns_from_settings_and_release_notes_without_losing_search() {
+        let mut h = harness();
+        h.state_mut().search = "Photo".into();
+        h.run_steps(3);
+        h.get_by_label("Settings").click();
+        h.run_steps(3);
+        h.key_press(egui::Key::Escape);
+        h.run_steps(3);
+        assert!(!h.state().settings_open);
+        assert_eq!(h.state().search, "Photo");
+        h.get_by_label("What's new").click();
+        h.run_steps(3);
+        h.key_press(egui::Key::Escape);
+        h.run_steps(3);
+        assert!(h.state().details.is_none());
+        assert_eq!(h.state().search, "Photo");
     }
     #[test]
     fn keyboard_search_filters_and_reports_empty_results() {

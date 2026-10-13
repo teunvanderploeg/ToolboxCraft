@@ -10,11 +10,11 @@ Downloads cover Intel and Apple silicon Macs, Windows x64 and ARM64, and Linux x
 
 | System | Download | Alternative |
 | --- | --- | --- |
-| macOS, Intel and Apple silicon | [Universal DMG](https://github.com/teunvanderploeg/ToolboxCraft/releases/download/v0.1.4/toolboxcraft-0.1.4-macos-universal.dmg) | App bundle ZIP |
-| Windows x64 | [Per-user installer](https://github.com/teunvanderploeg/ToolboxCraft/releases/download/v0.1.4/toolboxcraft-0.1.4-windows-x64-setup.exe) | Portable ZIP |
-| Windows ARM64 | [Per-user installer](https://github.com/teunvanderploeg/ToolboxCraft/releases/download/v0.1.4/toolboxcraft-0.1.4-windows-arm64-setup.exe) | Portable ZIP |
-| Linux x86_64 | [AppImage](https://github.com/teunvanderploeg/ToolboxCraft/releases/download/v0.1.4/toolboxcraft-0.1.4-linux-x86_64.AppImage) | Tarball |
-| Linux ARM64 | [AppImage](https://github.com/teunvanderploeg/ToolboxCraft/releases/download/v0.1.4/toolboxcraft-0.1.4-linux-aarch64.AppImage) | Tarball |
+| macOS, Intel and Apple silicon | [Universal DMG](https://github.com/teunvanderploeg/ToolboxCraft/releases/download/v0.1.5/toolboxcraft-0.1.5-macos-universal.dmg) | App bundle ZIP |
+| Windows x64 | [Per-user installer](https://github.com/teunvanderploeg/ToolboxCraft/releases/download/v0.1.5/toolboxcraft-0.1.5-windows-x64-setup.exe) | Portable ZIP |
+| Windows ARM64 | [Per-user installer](https://github.com/teunvanderploeg/ToolboxCraft/releases/download/v0.1.5/toolboxcraft-0.1.5-windows-arm64-setup.exe) | Portable ZIP |
+| Linux x86_64 | [AppImage](https://github.com/teunvanderploeg/ToolboxCraft/releases/download/v0.1.5/toolboxcraft-0.1.5-linux-x86_64.AppImage) | Tarball |
+| Linux ARM64 | [AppImage](https://github.com/teunvanderploeg/ToolboxCraft/releases/download/v0.1.5/toolboxcraft-0.1.5-linux-aarch64.AppImage) | Tarball |
 
 All alternatives and SHA-256 checksums are on the release page. On macOS, drag ToolboxCraft from the DMG into Applications. On Windows, run the installer or extract the portable ZIP and open `ToolboxCraft/toolboxcraft.exe`. On Linux, make the AppImage executable and run it. Quit an older copy before replacing it.
 
@@ -78,7 +78,7 @@ cargo run -p toolboxcraft -- --preview --preview-settings --screenshot /absolute
 cargo run -p toolboxcraft -- --preview --preview-notes --screenshot /absolute/path/release-notes.png
 ```
 
-Search app names or descriptions, use Cmd/Ctrl+F to focus search, click an installed app row to open it, use What's new or the overflow menu for full-page release notes, and use its overflow menu for automatic-update controls and uninstall. Closing the window keeps the launcher in the tray when a tray is available; use Quit to exit.
+Search app names or descriptions, use Cmd/Ctrl+F to focus search, click an installed app row to open it, use What's new or the overflow menu for full-page release notes, and use its overflow menu for automatic-update controls and uninstall. Closing the window keeps the launcher in the tray when a tray is available; use Quit to exit. On Windows, left-click or double-click the tray icon to restore and focus ToolboxCraft; right-click opens its menu. The restore path also handles minimized windows without waiting for the hidden UI to repaint. Press Escape to return from Settings or release notes without losing your search.
 
 ## Package releases
 
@@ -87,7 +87,7 @@ The CI workflow runs formatting, Clippy, tests, and native builds on macOS, Wind
 Build both Rust executables before packaging. On macOS, combine x86_64 and aarch64 builds with `lipo` into a shared binary directory. On Windows install NSIS and add `makensis` to PATH. On Linux install `appimagetool`.
 
 ```sh
-python3 packaging/package.py --platform macos-universal --version 0.1.4 --bin-dir target/universal/release
+python3 packaging/package.py --platform macos-universal --version 0.1.5 --bin-dir target/universal/release
 python3 packaging/manifest.py
 ```
 
