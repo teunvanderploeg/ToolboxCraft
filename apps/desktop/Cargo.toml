@@ -1,0 +1,30 @@
+[package]
+name = "toolboxcraft"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+default-run = "toolboxcraft"
+
+[dependencies]
+toolboxcraft-core = { path = "../../crates/core" }
+toolboxcraft-platform = { path = "../../crates/platform" }
+anyhow.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+sysinfo.workspace = true
+eframe = { version = "=0.33.3", default-features = false, features = ["glow", "wayland", "x11", "accesskit", "default_fonts"] }
+egui_extras = { version = "=0.33.3", features = ["image"] }
+image = { version = "0.25", default-features = false, features = ["png"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-appender = "0.2"
+
+[target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]
+tray-icon = "0.21"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+ksni = { version = "0.3", default-features = false, features = ["async-io", "blocking"] }
+
+[dev-dependencies]
+egui_kittest = { version = "=0.33.3", features = ["eframe"] }

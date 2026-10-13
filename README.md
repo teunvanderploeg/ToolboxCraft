@@ -1,0 +1,119 @@
+# ToolboxCraft
+
+A native Rust desktop launcher for the twelve Artcraft apps. Install, open, update, and remove apps from one compact window. Downloads come from the official `storytold` GitHub repositories.
+
+## Download
+
+Get the latest build from [GitHub Releases](https://github.com/teunvanderploeg/ToolboxCraft/releases/latest).
+
+Version 0.1.3 includes a universal macOS DMG for Intel and Apple silicon. Open the DMG and drag ToolboxCraft into Applications. Quit an older copy before replacing it. This build is ad-hoc signed and has not been Apple-notarized. ToolboxCraft self-updates are not configured in this release.
+
+Windows and Linux source and packaging workflows are included; native packages will be published after their platform checks pass.
+
+![ToolboxCraft app list](docs/screenshots/apps.png)
+
+## Run
+
+Requires Rust 1.91 or newer. The GUI uses egui/eframe 0.33 and OpenGL. It contains no webview, JavaScript, or Electron runtime. The application calls OS tools for native desktop integration.
+
+```sh
+cargo run -p toolboxcraft
+```
+
+On Debian/Ubuntu, install build dependencies first:
+
+```sh
+sudo apt-get install libxkbcommon-dev libwayland-dev libgl1-mesa-dev libx11-dev libxrandr-dev libxi-dev
+```
+
+Linux tray integration uses StatusNotifierItem over D-Bus. KDE and compatible desktops support it directly; GNOME needs an AppIndicator extension. When tray creation fails, closing the window exits normally. AppImages need FUSE; the app launcher uses extraction mode when `/dev/fuse` is unavailable.
+
+```sh
+cargo fmt --all --check
+cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo test --workspace --locked
+cargo build --workspace --locked
+```
+
+## What it manages
+
+PhotoCraft, VectorCraft, FilmCraft, LightCraft, PdfCraft, EffectCraft, DesignCraft, WordCraft, SoundCraft, DeckCraft, CADCraft, and GridCraft. The catalog is bundled, while stable release versions and notes come from GitHub.
+
+| System | Managed application location | Package |
+| --- | --- | --- |
+| macOS | `~/Applications/ToolboxCraft/<App>.app` | Official universal DMG |
+| Windows | `%LOCALAPPDATA%/ToolboxCraft/ToolboxCraft/data/apps/<id>` | Official x64 or ARM64 portable ZIP |
+| Linux | `${XDG_DATA_HOME:-~/.local/share}/toolboxcraft/apps/<id>` | Official x86_64 or ARM64 AppImage |
+
+State, receipts, logs, download staging, and recovery records use the OS-standard directory returned by `directories::ProjectDirs`. On macOS it is `~/Library/Application Support/dev.ToolboxCraft.ToolboxCraft`.
+
+Apps found in standard OS locations are marked External. You can open them or explicitly install a separate managed copy. ToolboxCraft never updates or uninstalls an external installation. External installations whose version cannot be read show Unknown.
+
+Updates are enabled by default. ToolboxCraft checks at startup and every six hours while running, downloads up to two packages at once, and installs one app at a time. It waits for a running app to close, matching executable paths and the original `APPIMAGE` path for mounted Linux AppImages. Launch at login is optional and initially disabled. Automatic updates can be disabled globally or per app. Cancelled and failed updates require a manual retry.
+
+Each package must match its release's `SHA256SUMS.txt`. macOS additionally requires Artcraft's publisher team `DJ6XS33FX8`, the expected bundle identifier, and the expected release version. Download quarantine is applied to installed macOS bundles. Checksums detect corruption; the app publishers remain the trust source for their releases.
+
+Installers stage files before activation and keep a backup until the new installation and shortcut are recorded. Recovery runs at startup. Uninstalling removes only managed app files, receipts, and shortcuts; user documents and app preferences remain.
+
+## Interface preview
+
+Preview mode uses in-memory sample data and never starts the release checker or installer. It supports repeatable screenshots for visual inspection:
+
+```sh
+cargo run -p toolboxcraft -- --preview --screenshot /absolute/path/preview.png
+cargo run -p toolboxcraft -- --preview --scale 2 --screenshot /absolute/path/preview-2x.png
+cargo run -p toolboxcraft -- --preview --preview-settings --screenshot /absolute/path/settings.png
+cargo run -p toolboxcraft -- --preview --preview-notes --screenshot /absolute/path/release-notes.png
+```
+
+Search app names or descriptions, use Cmd/Ctrl+F to focus search, click an installed app row to open it, use What's new or the overflow menu for full-page release notes, and use its overflow menu for automatic-update controls and uninstall. Closing the window keeps the launcher in the tray when a tray is available; use Quit to exit.
+
+## Package releases
+
+The CI workflow runs formatting, Clippy, tests, and native builds on macOS, Windows, and Linux. The release workflow prepares universal macOS DMGs, Windows per-user NSIS installers and portable ZIPs, Linux AppImages and tarballs, updater ZIPs, and checksums. It uploads reviewable artifacts. It does not publish a GitHub release automatically.
+
+Build both Rust executables before packaging. On macOS, combine x86_64 and aarch64 builds with `lipo` into a shared binary directory. On Windows install NSIS and add `makensis` to PATH. On Linux install `appimagetool`.
+
+```sh
+python3 packaging/package.py --platform macos-universal --version 0.1.3 --bin-dir target/universal/release
+python3 packaging/manifest.py
+```
+
+Other platform keys are `windows-x64`, `windows-arm64`, `linux-x86_64`, and `linux-aarch64`. Package scripts require only standard Python libraries and the platform packaging tools. macOS packages without signing credentials are ad-hoc signed for local testing.
+
+For signed releases, configure the CI signing certificate and notarization credentials described in [packaging/README.md](packaging/README.md). Signed builds and a release repository are needed to exercise the complete self-update flow. Cross-platform runtime smoke tests must run on each target OS before distribution.
+
+## ToolboxCraft self-updates
+
+Build-time environment variables configure the publisher:
+
+- `TOOLBOXCRAFT_RELEASE_REPO`: GitHub `owner/repository` for ToolboxCraft itself.
+- `TOOLBOXCRAFT_UPDATE_PUBLIC_KEY`: hexadecimal 32-byte Ed25519 public key.
+
+With either value absent, Settings explains that self-updates are unavailable and makes no publisher requests. This is the default for local builds.
+
+The publisher uploads `update.json`, `update.json.sig`, and updater ZIPs to the matching `v<version>` GitHub release. `update.json.sig` is a base64 Ed25519 signature of the exact manifest bytes. The signed manifest maps platform keys to a ZIP filename, SHA-256, and byte length. See `packaging/manifest.py` for generation.
+
+The running launcher verifies the manifest signature and package checksum, extracts into staging, and starts its existing local Rust updater helper. The helper waits for the launcher process to exit, stages the replacement beside the installation, swaps it with a backup, and restarts it. The replacement launcher removes the backup after its UI starts successfully. macOS updates must match the installed app's signing team.
+
+Self-update is supported for packaged `.app` bundles, Linux AppImages, and installed or portable folders named `ToolboxCraft`. Development binaries and arbitrary portable folder names report an actionable error. If a replacement cannot start, recover the adjacent `.toolboxcraft-backup` copy. A failed helper leaves the working installation or its backup intact.
+
+## Diagnostics and boundaries
+
+Logs rotate daily under the data directory's `logs` folder. Set `RUST_LOG=debug` for more detail. GitHub failures retain cached releases and installed apps. Release details indicate cached metadata older than six hours. Checks and downloads use system proxy settings through reqwest.
+
+This first release does not include parallel versions, prerelease channels, remote management, document indexing, or user-selected rollback. Platform integration code exists for all three systems; native runtime validation must be performed on the respective OS.
+
+ToolboxCraft is an independent project. It is not affiliated with JetBrains or Artcraft. See [ATTRIBUTION.md](ATTRIBUTION.md) for bundled artwork and fonts.
+
+## macOS signature regression check
+
+The installer copies the bundle out of its DMG without Finder resource metadata, verifies its nested code against the Artcraft publisher, then applies download quarantine. To exercise the full staging path with a checksum-verified official WordCraft DMG:
+
+```sh
+TOOLBOXCRAFT_TEST_DMG=/absolute/path/wordcraft-macos-universal.dmg \
+TOOLBOXCRAFT_TEST_VERSION=0.6.1 \
+cargo test -p toolboxcraft-platform official_wordcraft_dmg -- --ignored
+```
+
+The test uses a temporary directory and preserves installed apps. Set the version to match the downloaded release.
