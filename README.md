@@ -23,8 +23,10 @@ cargo run -p toolboxcraft
 On Debian/Ubuntu, install build dependencies first:
 
 ```sh
-sudo apt-get install libxkbcommon-dev libwayland-dev libgl1-mesa-dev libx11-dev libxrandr-dev libxi-dev
+sudo apt-get install libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libgl1-mesa-dev libx11-dev libxrandr-dev libxi-dev
 ```
+
+Linux desktop runs require the X11 keyboard library. On Debian/Ubuntu, install `libxkbcommon-x11-0` if the launcher reports that `libxkbcommon-x11.so` cannot be loaded.
 
 Linux tray integration uses StatusNotifierItem over D-Bus. KDE and compatible desktops support it directly; GNOME needs an AppIndicator extension. When tray creation fails, closing the window exits normally. AppImages need FUSE; the app launcher uses extraction mode when `/dev/fuse` is unavailable.
 

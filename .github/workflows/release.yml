@@ -33,7 +33,7 @@ jobs:
         shell: bash
         run: |
           sudo apt-get update
-          sudo apt-get install -y libxkbcommon-dev libwayland-dev libgl1-mesa-dev libx11-dev libxrandr-dev libxi-dev libfuse2
+          sudo apt-get install -y libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libgl1-mesa-dev libx11-dev libxrandr-dev libxi-dev libfuse2
           ARCH=$(uname -m)
           curl --fail --location https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-$ARCH.AppImage -o /tmp/appimagetool
           chmod +x /tmp/appimagetool
