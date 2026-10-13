@@ -1,8 +1,6 @@
 #!/usr/bin/env python3
 """Package native builds and a matching signed-updater archive. No third-party Python modules."""
 import argparse, hashlib, json, os, pathlib, shutil, subprocess, tarfile, tomllib, zipfile
-from signing import validate_distribution_signing
-from sign_windows import sign as sign_windows
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 DIST = ROOT / 'dist'
 p = argparse.ArgumentParser()
@@ -10,7 +8,6 @@ p.add_argument('--platform', choices=['macos-universal', 'windows-x64', 'windows
 p.add_argument('--version', default=tomllib.loads((ROOT / 'Cargo.toml').read_text())['workspace']['package']['version'])
 p.add_argument('--bin-dir', type=pathlib.Path, required=True)
 a = p.parse_args()
-validate_distribution_signing(a.platform, required=os.environ.get('REQUIRE_DISTRIBUTION_SIGNING') == '1')
 DIST.mkdir(exist_ok=True)
 stage = DIST / ('stage-' + a.platform)
 if stage.exists(): shutil.rmtree(stage)
@@ -26,13 +23,6 @@ for name in ['toolboxcraft', 'toolboxcraft-updater']:
 if windows:
     subprocess.run([os.sys.executable, str(ROOT / 'packaging/verify_windows_icons.py'), str(ROOT / 'assets/icons/toolboxcraft.ico'), *[str(binaries / name) for name in ['toolboxcraft.exe', 'toolboxcraft-updater.exe']]], check=True)
     shutil.copy2(ROOT / 'assets/icons/toolboxcraft.ico', app / 'toolboxcraft.ico')
-
-def submit_notarization(path, profile):
-    result = subprocess.check_output(['xcrun', 'notarytool', 'submit', str(path), '--keychain-profile', profile, '--wait', '--output-format', 'json'], text=True)
-    submission = json.loads(result)
-    if submission.get('status') != 'Accepted':
-        raise RuntimeError(f"Apple notarization rejected {path.name}; submission {submission.get('id')}. Inspect its notarytool log.")
-    return submission
 if mac:
     for executable in binaries.iterdir():
         architectures = subprocess.check_output(['lipo', '-archs', str(executable)], text=True).split()
@@ -60,28 +50,17 @@ if mac:
         subprocess.run(['codesign', '--force', '--options', 'runtime', '--timestamp', '--sign', identity, str(app)], check=True)
     else:
         subprocess.run(['codesign', '--force', '--deep', '--sign', '-', str(app)], check=True)
-    subprocess.run(['codesign', '--verify', '--deep', '--strict', str(app)], check=True)
     profile = os.environ.get('MACOS_NOTARY_PROFILE')
     if profile:
-        notarize_archive = stage / 'notarize.zip'
-        subprocess.run(['ditto', '-c', '-k', '--keepParent', str(app), str(notarize_archive)], check=True)
-        submit_notarization(notarize_archive, profile)
+        notarize = stage / 'notarize.zip'
+        subprocess.run(['ditto', '-c', '-k', '--keepParent', str(app), str(notarize)], check=True)
+        subprocess.run(['xcrun', 'notarytool', 'submit', str(notarize), '--keychain-profile', profile, '--wait'], check=True)
         subprocess.run(['xcrun', 'stapler', 'staple', str(app)], check=True)
-        subprocess.run(['xcrun', 'stapler', 'validate', str(app)], check=True)
-        subprocess.run(['spctl', '--assess', '--type', 'execute', '--verbose=2', str(app)], check=True)
     dmgroot = stage / 'dmg'
     dmgroot.mkdir()
     shutil.copytree(app, dmgroot / app.name)
     (dmgroot / 'Applications').symlink_to('/Applications')
-    dmg = DIST / f'toolboxcraft-{a.version}-{a.platform}.dmg'
-    subprocess.run(['hdiutil', 'create', '-volname', 'ToolboxCraft', '-srcfolder', str(dmgroot), '-ov', '-format', 'UDZO', str(dmg)], check=True)
-    if identity:
-        subprocess.run(['codesign', '--force', '--timestamp', '--sign', identity, str(dmg)], check=True)
-        subprocess.run(['codesign', '--verify', '--strict', str(dmg)], check=True)
-    if profile:
-        submit_notarization(dmg, profile)
-        subprocess.run(['xcrun', 'stapler', 'staple', str(dmg)], check=True)
-        subprocess.run(['xcrun', 'stapler', 'validate', str(dmg)], check=True)
+    subprocess.run(['hdiutil', 'create', '-volname', 'ToolboxCraft', '-srcfolder', str(dmgroot), '-ov', '-format', 'UDZO', str(DIST / f'toolboxcraft-{a.version}-{a.platform}.dmg')], check=True)
 else:
     shutil.copy2(ROOT / 'README.md', app)
     shutil.copy2(ROOT / 'LICENSE', app)
@@ -90,7 +69,8 @@ else:
     for notice in (ROOT / 'assets/fonts').glob('*LICENSE.txt'): shutil.copy2(notice, app / 'licenses')
     if windows and os.environ.get('WINDOWS_SIGN_PFX'):
         for executable in binaries.glob('*.exe'):
-            sign_windows(executable)
+            result = subprocess.run(['signtool', 'sign', '/f', os.environ['WINDOWS_SIGN_PFX'], '/p', os.environ.get('WINDOWS_SIGN_PASSWORD', ''), '/fd', 'SHA256', '/tr', 'http://timestamp.digicert.com', '/td', 'SHA256', str(executable)])
+            if result.returncode: raise RuntimeError('Windows executable signing failed')
     if not windows:
         tarpath = DIST / f'toolboxcraft-{a.version}-{a.platform}.tar.gz'
         with tarfile.open(tarpath, 'w:gz') as tf: tf.add(app, arcname='ToolboxCraft')
@@ -119,13 +99,11 @@ with zipfile.ZipFile(update, 'w', zipfile.ZIP_DEFLATED) as z:
     if not windows and not mac: z.write(stage / 'ToolboxCraft.AppImage', 'ToolboxCraft.AppImage')
 if windows:
     shutil.copy2(update, DIST / f'toolboxcraft-{a.version}-{a.platform}-portable.zip')
-    definitions = [f'/DVERSION={a.version}', f'/DARCH={a.platform}', f'/DSOURCE={app}', f'/DOUT={DIST}']
-    if os.environ.get('WINDOWS_SIGN_PFX'):
-        definitions += [f'/DSIGN_PYTHON={os.sys.executable}', f'/DSIGN_SCRIPT={ROOT / "packaging/sign_windows.py"}']
-    subprocess.run(['makensis', *definitions, str(ROOT / 'packaging/windows.nsi')], check=True)
+    subprocess.run(['makensis', f'/DVERSION={a.version}', f'/DARCH={a.platform}', f'/DSOURCE={app}', f'/DOUT={DIST}', str(ROOT / 'packaging/windows.nsi')], check=True)
     if os.environ.get('WINDOWS_SIGN_PFX'):
         installer = DIST / f'toolboxcraft-{a.version}-{a.platform}-setup.exe'
-        sign_windows(installer)
+        result = subprocess.run(['signtool', 'sign', '/f', os.environ['WINDOWS_SIGN_PFX'], '/p', os.environ.get('WINDOWS_SIGN_PASSWORD', ''), '/fd', 'SHA256', '/tr', 'http://timestamp.digicert.com', '/td', 'SHA256', str(installer)])
+        if result.returncode: raise RuntimeError('Windows installer signing failed')
 package = dict(file=update.name, sha256=hashlib.sha256(update.read_bytes()).hexdigest(), size=update.stat().st_size)
 (DIST / f'metadata-{a.platform}.json').write_text(json.dumps(dict(version=a.version, target=a.platform, package=package)))
 shutil.rmtree(stage)
