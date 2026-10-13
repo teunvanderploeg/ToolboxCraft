@@ -1,6 +1,35 @@
 use crate::tray::TrayAction;
 use eframe::egui;
 
+/// A second Windows launch should activate the existing instance, not silently exit.
+#[cfg(target_os = "windows")]
+pub fn activate_existing() -> bool {
+    use windows_sys::Win32::UI::WindowsAndMessaging::*;
+    let title: Vec<u16> = "ToolboxCraft\0".encode_utf16().collect();
+    // FindWindow is confined to the interactive desktop. Only window visibility
+    // and focus change; no application commands or user data are sent.
+    unsafe {
+        let hwnd = FindWindowW(std::ptr::null(), title.as_ptr());
+        if hwnd.is_null() || IsWindow(hwnd) == 0 {
+            return false;
+        }
+        ShowWindow(
+            hwnd,
+            if IsIconic(hwnd) != 0 {
+                SW_RESTORE
+            } else {
+                SW_SHOW
+            },
+        );
+        SetForegroundWindow(hwnd);
+        true
+    }
+}
+#[cfg(not(target_os = "windows"))]
+pub fn activate_existing() -> bool {
+    false
+}
+
 /// Window activation must also work when the hidden GUI is not receiving redraws.
 #[derive(Clone)]
 pub struct WindowControl {
@@ -88,11 +117,12 @@ mod tests {
     #[test]
     fn tray_activation_restores_a_hidden_or_minimized_native_window_without_a_gui_frame() {
         let class: Vec<u16> = "STATIC\0".encode_utf16().collect();
+        let title: Vec<u16> = "ToolboxCraft\0".encode_utf16().collect();
         unsafe {
             let hwnd = CreateWindowExW(
                 0,
                 class.as_ptr(),
-                class.as_ptr(),
+                title.as_ptr(),
                 WS_OVERLAPPEDWINDOW,
                 0,
                 0,
@@ -119,6 +149,9 @@ mod tests {
             };
             let (actions, events) = std::sync::mpsc::channel();
             assert_eq!(IsWindowVisible(hwnd), 0);
+            assert!(activate_existing());
+            assert_ne!(IsWindowVisible(hwnd), 0);
+            ShowWindow(hwnd, SW_HIDE);
             control.signal(&actions, TrayAction::Open);
             assert_ne!(IsWindowVisible(hwnd), 0);
             assert!(matches!(events.try_recv().unwrap(), TrayAction::Open));

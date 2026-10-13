@@ -10,7 +10,15 @@ use toolboxcraft_core::{
 fn main() -> anyhow::Result<()> {
     let store = Store::standard()?;
     let preview = std::env::args().any(|a| a == "--preview");
-    let _lock = if preview { None } else { Some(store.lock()?) };
+    let _lock = if preview {
+        None
+    } else {
+        match store.lock() {
+            Ok(lock) => Some(lock),
+            Err(_) if window::activate_existing() => return Ok(()),
+            Err(err) => return Err(err),
+        }
+    };
     let log_dir = store.root.join("logs");
     std::fs::create_dir_all(&log_dir)?;
     let writer = tracing_appender::rolling::daily(log_dir, "toolboxcraft.log");
