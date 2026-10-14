@@ -2,6 +2,8 @@
 
 The release workflow publishes a complete GitHub release when a `v<version>` tag is pushed. It stages assets in a draft, uploads all five update packages plus the signed manifest and checksums, then publishes it as latest. Tags must match the workspace version in Cargo.toml. Manual workflow runs upload reviewable artifacts without publishing. Public tag releases require the Ed25519 update-signing secret. Apple and Windows distribution certificates are optional; automatic updates work without them because manifests and packages are authenticated using the embedded Ed25519 key.
 
+Only stable SemVer versions can use this update channel. The workflow rejects prereleases and mismatched tags before building, and manifest assembly validates the version again before signing. This keeps a beta release from masking the last stable release on GitHub.
+
 0.1.7 is the first update-enabled build. Users on 0.1.6 or earlier must install it manually once. Future updates install and restart automatically unless disabled in Settings.
 
 ## Self-update signing

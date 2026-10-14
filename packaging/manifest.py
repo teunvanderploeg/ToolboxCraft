@@ -9,6 +9,8 @@ import pathlib
 import subprocess
 import tempfile
 
+from release_version import validate_release_version
+
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 PLATFORMS = {'macos-universal', 'windows-x64', 'windows-arm64', 'linux-x86_64', 'linux-aarch64'}
 
@@ -33,6 +35,7 @@ def assemble(root, require_signature=False, require_all_platforms=False):
     if not records:
         raise RuntimeError('No platform metadata found')
     version = records[0]['version']
+    validate_release_version(version)
     packages = {}
     for record in records:
         target = record['target']
