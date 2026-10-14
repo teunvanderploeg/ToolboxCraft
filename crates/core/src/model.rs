@@ -92,6 +92,7 @@ pub enum Theme {
 #[serde(default)]
 pub struct Settings {
     pub auto_update: bool,
+    pub auto_update_toolboxcraft: bool,
     pub disabled_apps: Vec<String>,
     pub launch_at_login: bool,
     pub theme: Theme,
@@ -100,6 +101,7 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             auto_update: true,
+            auto_update_toolboxcraft: true,
             disabled_apps: vec![],
             launch_at_login: false,
             theme: Theme::System,

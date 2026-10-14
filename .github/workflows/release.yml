@@ -5,8 +5,25 @@ on:
   workflow_dispatch:
 permissions:
   contents: read
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 jobs:
+  signing:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Check stable release version
+        run: python packaging/release_version.py
+      - name: Verify release signing configuration
+        run: python packaging/manifest.py --check-signing-key
+        env:
+          UPDATE_PRIVATE_KEY: ${{ secrets.TOOLBOXCRAFT_UPDATE_PRIVATE_KEY }}
   package:
+    needs: signing
     strategy:
       fail-fast: false
       matrix:
@@ -19,7 +36,6 @@ jobs:
     runs-on: ${{ matrix.runner }}
     env:
       TOOLBOXCRAFT_RELEASE_REPO: ${{ github.repository }}
-      TOOLBOXCRAFT_UPDATE_PUBLIC_KEY: ${{ vars.TOOLBOXCRAFT_UPDATE_PUBLIC_KEY }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -43,15 +59,6 @@ jobs:
         run: |
           choco install nsis -y
           Add-Content $env:GITHUB_PATH 'C:\Program Files (x86)\NSIS'
-      - name: Check release version
-        shell: bash
-        run: |
-          python - <<'PYTHON'
-          import os, tomllib
-          version = tomllib.load(open('Cargo.toml', 'rb'))['workspace']['package']['version']
-          if os.environ['GITHUB_REF_TYPE'] == 'tag':
-              assert os.environ['GITHUB_REF_NAME'] == 'v' + version, 'Tag must match Cargo.toml version'
-          PYTHON
       - name: Configure macOS signing
         if: runner.os == 'macOS'
         shell: bash
@@ -121,6 +128,8 @@ jobs:
   assemble:
     needs: package
     runs-on: ubuntu-22.04
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -131,10 +140,27 @@ jobs:
           pattern: package-*
           merge-multiple: true
           path: dist
-      - run: python packaging/manifest.py
+      - run: python packaging/manifest.py --require-signature --require-all-platforms
         env:
           UPDATE_PRIVATE_KEY: ${{ secrets.TOOLBOXCRAFT_UPDATE_PRIVATE_KEY }}
       - uses: actions/upload-artifact@v4
         with:
           name: release-assets
           path: dist/*
+      - name: Publish signed release
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          if DRAFT=$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft 2>/dev/null); then
+            if [[ "$DRAFT" != true ]]; then
+              echo 'This release is already published; publish a new version instead of replacing it.' >&2
+              exit 1
+            fi
+          else
+            gh release create "$RELEASE_TAG" --verify-tag --draft --title "ToolboxCraft ${RELEASE_TAG#v}" --notes-file packaging/release-notes.md
+          fi
+          gh release upload "$RELEASE_TAG" dist/* --clobber
+          gh release edit "$RELEASE_TAG" --draft=false --latest

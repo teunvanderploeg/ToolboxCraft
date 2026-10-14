@@ -99,12 +99,32 @@ pub struct Toolbox {
     details: Option<String>,
     notice: String,
     update: Option<self_update::SelfUpdate>,
+    self_update_status: String,
     background: bool,
     preview: bool,
     screenshot: Option<PathBuf>,
     frames: u32,
     quit: bool,
     last_state: State,
+}
+fn wake_engine_events(
+    events: mpsc::Receiver<Event>,
+    window: crate::window::WindowControl,
+) -> mpsc::Receiver<Event> {
+    let (sender, receiver) = mpsc::channel();
+    std::thread::spawn(move || {
+        for event in events {
+            if matches!(event, Event::RestartReady) {
+                window.request_restart();
+            } else {
+                window.wake();
+            }
+            if sender.send(event).is_err() {
+                break;
+            }
+        }
+    });
+    receiver
 }
 impl Toolbox {
     pub fn new(
@@ -143,11 +163,17 @@ impl Toolbox {
             cc.egui_ctx
                 .send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(460.0, 720.0)));
         }
+        let window = crate::window::WindowControl::new(cc);
+        let events = if preview {
+            events
+        } else {
+            wake_engine_events(events, window.clone())
+        };
         Self {
             handle,
             events,
             tray: None,
-            window: crate::window::WindowControl::new(cc),
+            window,
             tray_attempted: false,
             search: String::new(),
             settings_open: preview && std::env::args().any(|arg| arg == "--preview-settings"),
@@ -158,6 +184,7 @@ impl Toolbox {
             },
             notice: String::new(),
             update: None,
+            self_update_status: String::new(),
             background,
             preview,
             screenshot,
@@ -500,9 +527,15 @@ impl Toolbox {
             ui.add_space(12.0); ui.label(RichText::new("Appearance").strong());
             ui.horizontal(|ui| {ui.selectable_value(&mut settings.theme,Theme::System,"System");ui.selectable_value(&mut settings.theme,Theme::Dark,"Dark");ui.selectable_value(&mut settings.theme,Theme::Light,"Light");});
             ui.add_space(12.0); ui.label(RichText::new("ToolboxCraft").strong());ui.label(format!("Version {}",env!("CARGO_PKG_VERSION")));
-            if let Some(update)=&self.update {ui.label(format!("Version {} is available",update.manifest.version));if ui.button("Update and restart").clicked(){self.notice="Downloading ToolboxCraft update…".into();self.send(Command::ApplySelfUpdate);}}
+            ui.checkbox(&mut settings.auto_update_toolboxcraft,"Automatically update ToolboxCraft");
+            ui.label(RichText::new("Installs verified updates and restarts after app operations finish.").size(11.0).color(muted(ui)));
+            if !self.self_update_status.is_empty(){ui.label(&self.self_update_status);}
+            if let Some(update)=&self.update {
+                if self.self_update_status.is_empty(){ui.label(format!("Version {} is available",update.manifest.version));}
+                if ui.button("Update and restart").clicked(){self.notice="Downloading ToolboxCraft update…".into();self.send(Command::ApplySelfUpdate);}
+            }
             else if self_update::configuration().is_none(){ui.label(RichText::new("Self-updates are unavailable in this build. A release repository and signing key have not been configured.").size(11.0).color(muted(ui)));}
-            else if ui.button("Check ToolboxCraft updates").clicked(){self.send(Command::CheckSelfUpdate);}
+            if self_update::configuration().is_some() && ui.button("Check ToolboxCraft updates").clicked(){self.send(Command::CheckSelfUpdate);}
             ui.add_space(12.0);egui::CollapsingHeader::new("Update history").show(ui,|ui|{egui::ScrollArea::vertical().max_height(180.0).show(ui,|ui|{if state.history.is_empty(){ui.label("No updates installed yet.");}for entry in &state.history{let name=by_id(&entry.app).map(|a|a.name).unwrap_or(&entry.app);ui.label(format!("{} {} · {}",entry.action,name,entry.version));}});});
             ui.separator();ui.label(RichText::new("Independent launcher for Artcraft apps.").size(11.0).color(muted(ui)));
         });
@@ -553,6 +586,7 @@ impl eframe::App for Toolbox {
                     }
                 }
                 Event::SelfUpdate(update) => self.update = update,
+                Event::SelfUpdateStatus(status) => self.self_update_status = status,
                 Event::RestartReady => {
                     self.request_quit(ctx);
                     return;
@@ -1143,6 +1177,69 @@ mod tests {
             }
             assert!(commands.try_recv().is_err());
         }
+    }
+    #[test]
+    fn background_update_wakes_a_hidden_window_to_restart() {
+        let mut h = harness();
+        let (sender, events) = mpsc::channel();
+        let receiver = wake_engine_events(events, h.state().window.clone());
+        h.state().window.hide();
+        sender.send(Event::RestartReady).unwrap();
+        assert!(matches!(
+            receiver.recv_timeout(Duration::from_secs(2)).unwrap(),
+            Event::RestartReady
+        ));
+        assert!(h.state().window.quit_requested());
+        h.step();
+        assert!(h.state().quit);
+        assert!(
+            h.output().viewport_output[&egui::ViewportId::ROOT]
+                .commands
+                .contains(&egui::ViewportCommand::Close)
+        );
+    }
+    #[test]
+    fn settings_controls_launcher_updates_and_restart_event_exits() {
+        let (mut h, mut commands) = harness_with_commands();
+        h.state_mut().preview = false;
+        h.state_mut().tray_attempted = true;
+        h.get_by_label("Settings").click();
+        h.run_steps(3);
+        assert!(
+            h.state()
+                .handle
+                .state
+                .lock()
+                .unwrap()
+                .settings
+                .auto_update_toolboxcraft
+        );
+        h.get_by_label("Automatically update ToolboxCraft").click();
+        h.run_steps(3);
+        assert!(
+            matches!(commands.try_recv().unwrap(), Command::Settings(s) if !s.auto_update_toolboxcraft && s.auto_update)
+        );
+        h.get_by_label("Check ToolboxCraft updates").click();
+        h.run_steps(3);
+        assert!(matches!(
+            commands.try_recv().unwrap(),
+            Command::CheckSelfUpdate
+        ));
+        let (sender, events) = mpsc::channel();
+        h.state_mut().events = events;
+        sender
+            .send(Event::SelfUpdateStatus("Update failed: test error".into()))
+            .unwrap();
+        h.run_steps(3);
+        assert!(h.query_by_label("Update failed: test error").is_some());
+        sender.send(Event::RestartReady).unwrap();
+        h.step();
+        assert!(h.state().quit);
+        assert!(
+            h.output().viewport_output[&egui::ViewportId::ROOT]
+                .commands
+                .contains(&egui::ViewportCommand::Close)
+        );
     }
     #[test]
     fn settings_replace_catalog_and_back_restores_it() {

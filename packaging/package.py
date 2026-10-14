@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """Package native builds and a matching signed-updater archive. No third-party Python modules."""
-import argparse, hashlib, json, os, pathlib, shutil, subprocess, tarfile, zipfile
+import argparse, hashlib, json, os, pathlib, shutil, subprocess, tarfile, tomllib, zipfile
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 DIST = ROOT / 'dist'
 p = argparse.ArgumentParser()
 p.add_argument('--platform', choices=['macos-universal', 'windows-x64', 'windows-arm64', 'linux-x86_64', 'linux-aarch64'], required=True)
-p.add_argument('--version', default='0.1.6')
+p.add_argument('--version', default=tomllib.loads((ROOT / 'Cargo.toml').read_text())['workspace']['package']['version'])
 p.add_argument('--bin-dir', type=pathlib.Path, required=True)
 a = p.parse_args()
 DIST.mkdir(exist_ok=True)

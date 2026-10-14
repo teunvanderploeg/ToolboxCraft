@@ -10,15 +10,15 @@ Downloads cover Intel and Apple silicon Macs, Windows x64 and ARM64, and Linux x
 
 | System | Download | Alternative |
 | --- | --- | --- |
-| macOS, Intel and Apple silicon | [Universal DMG](https://github.com/teunvanderploeg/ToolboxCraft/releases/download/v0.1.5/toolboxcraft-0.1.5-macos-universal.dmg) | App bundle ZIP |
-| Windows x64 | [Per-user installer](https://github.com/teunvanderploeg/ToolboxCraft/releases/download/v0.1.5/toolboxcraft-0.1.5-windows-x64-setup.exe) | Portable ZIP |
-| Windows ARM64 | [Per-user installer](https://github.com/teunvanderploeg/ToolboxCraft/releases/download/v0.1.5/toolboxcraft-0.1.5-windows-arm64-setup.exe) | Portable ZIP |
-| Linux x86_64 | [AppImage](https://github.com/teunvanderploeg/ToolboxCraft/releases/download/v0.1.5/toolboxcraft-0.1.5-linux-x86_64.AppImage) | Tarball |
-| Linux ARM64 | [AppImage](https://github.com/teunvanderploeg/ToolboxCraft/releases/download/v0.1.5/toolboxcraft-0.1.5-linux-aarch64.AppImage) | Tarball |
+| macOS, Intel and Apple silicon | [Universal DMG](https://github.com/teunvanderploeg/ToolboxCraft/releases/download/v0.1.7/toolboxcraft-0.1.7-macos-universal.dmg) | App bundle ZIP |
+| Windows x64 | [Per-user installer](https://github.com/teunvanderploeg/ToolboxCraft/releases/download/v0.1.7/toolboxcraft-0.1.7-windows-x64-setup.exe) | Portable ZIP |
+| Windows ARM64 | [Per-user installer](https://github.com/teunvanderploeg/ToolboxCraft/releases/download/v0.1.7/toolboxcraft-0.1.7-windows-arm64-setup.exe) | Portable ZIP |
+| Linux x86_64 | [AppImage](https://github.com/teunvanderploeg/ToolboxCraft/releases/download/v0.1.7/toolboxcraft-0.1.7-linux-x86_64.AppImage) | Tarball |
+| Linux ARM64 | [AppImage](https://github.com/teunvanderploeg/ToolboxCraft/releases/download/v0.1.7/toolboxcraft-0.1.7-linux-aarch64.AppImage) | Tarball |
 
 All alternatives and SHA-256 checksums are on the release page. On macOS, drag ToolboxCraft from the DMG into Applications. On Windows, run the installer or extract the portable ZIP and open `ToolboxCraft/toolboxcraft.exe`. On Linux, make the AppImage executable and run it. Quit an older copy before replacing it.
 
-The macOS build is ad-hoc signed and has not been Apple-notarized. ToolboxCraft self-updates are not configured in this release.
+Version 0.1.7 enables automatic ToolboxCraft updates. Install it manually once when upgrading from 0.1.6 or earlier; those builds cannot check for ToolboxCraft updates. The macOS build is ad-hoc signed and not Apple-notarized; Windows builds are unsigned. Initial installation can still show Gatekeeper or SmartScreen prompts. Apple and Windows distribution signing will be added separately; it is not required for updates authenticated by the embedded Ed25519 key.
 
 ![ToolboxCraft app list](docs/screenshots/apps.png)
 
@@ -82,31 +82,31 @@ Search app names or descriptions, use Cmd/Ctrl+F to focus search, click an insta
 
 ## Package releases
 
-The CI workflow runs formatting, Clippy, tests, and native builds on macOS, Windows, and Linux. The release workflow prepares universal macOS DMGs, Windows per-user NSIS installers and portable ZIPs, Linux AppImages and tarballs, updater ZIPs, and checksums. It uploads reviewable artifacts. It does not publish a GitHub release automatically.
+The CI workflow runs formatting, Clippy, tests, and native builds on macOS, Windows, and Linux. The release workflow prepares universal macOS DMGs, Windows per-user NSIS installers and portable ZIPs, Linux AppImages and tarballs, updater ZIPs, and checksums. Pushing a `v<version>` tag builds and automatically publishes a complete GitHub release after every platform succeeds. The release requires a matching Ed25519 update-signing key. Apple and Windows distribution certificates are optional and are not required to publish updates. A manual workflow run produces reviewable artifacts without publishing.
 
 Build both Rust executables before packaging. On macOS, combine x86_64 and aarch64 builds with `lipo` into a shared binary directory. On Windows install NSIS and add `makensis` to PATH. On Linux install `appimagetool`.
 
 ```sh
-python3 packaging/package.py --platform macos-universal --version 0.1.6 --bin-dir target/universal/release
+python3 packaging/package.py --platform macos-universal --version 0.1.7 --bin-dir target/universal/release
 python3 packaging/manifest.py
 ```
 
-Other platform keys are `windows-x64`, `windows-arm64`, `linux-x86_64`, and `linux-aarch64`. Package scripts require only standard Python libraries and the platform packaging tools. macOS packages without signing credentials are ad-hoc signed for local testing.
+Other platform keys are `windows-x64`, `windows-arm64`, `linux-x86_64`, and `linux-aarch64`. Package scripts require only standard Python libraries and the platform packaging tools. macOS packages without signing credentials are ad-hoc signed for local testing. Public tag releases require the update-signing secret; platform certificates are optional.
 
-For signed releases, configure the CI signing certificate and notarization credentials described in [packaging/README.md](packaging/README.md). Signed builds and a release repository are needed to exercise the complete self-update flow. Cross-platform runtime smoke tests must run on each target OS before distribution.
+For signed releases, configure the CI signing certificate and notarization credentials described in [packaging/README.md](packaging/README.md). The Ed25519 release key authenticates self-updates. Apple and Windows certificates authenticate downloads to the operating system. Cross-platform runtime smoke tests must run on each target OS before distribution.
 
 ## ToolboxCraft self-updates
 
-Build-time environment variables configure the publisher:
+The official release repository and Ed25519 public key in `packaging/update-public-key.hex` are embedded in every build. Build-time environment variables can override the publisher for custom builds:
 
 - `TOOLBOXCRAFT_RELEASE_REPO`: GitHub `owner/repository` for ToolboxCraft itself.
 - `TOOLBOXCRAFT_UPDATE_PUBLIC_KEY`: hexadecimal 32-byte Ed25519 public key.
 
-With either value absent, Settings explains that self-updates are unavailable and makes no publisher requests. This is the default for local builds.
+Self-updates are enabled by default, including when loading settings from older versions. Settings has a separate “Automatically update ToolboxCraft” switch. The launcher checks at startup and every six hours, downloads and verifies a newer stable release, waits for app operations to finish, and updates and restarts automatically. Disabling the switch keeps manual checks and “Update and restart” available. A failed installation requires a manual retry; checks run again on the next scheduled interval. Development binaries can check for releases but cannot replace themselves outside a supported installation layout.
 
-The publisher uploads `update.json`, `update.json.sig`, and updater ZIPs to the matching `v<version>` GitHub release. `update.json.sig` is a base64 Ed25519 signature of the exact manifest bytes. The signed manifest maps platform keys to a ZIP filename, SHA-256, and byte length. See `packaging/manifest.py` for generation.
+The publisher uploads `update.json`, `update.json.sig`, and updater ZIPs to the matching `v<version>` GitHub release. `update.json.sig` is a base64 Ed25519 signature of the exact manifest bytes. The signed manifest maps platform keys to a ZIP filename, SHA-256, and byte length. The release workflow runs `packaging/manifest.py --require-signature --require-all-platforms`, verifies the signing key matches the embedded public key, and refuses incomplete packages before publication.
 
-The running launcher verifies the manifest signature and package checksum, extracts into staging, and starts its existing local Rust updater helper. The helper waits for the launcher process to exit, stages the replacement beside the installation, swaps it with a backup, and restarts it. The replacement launcher removes the backup after its UI starts successfully. macOS updates must match the installed app's signing team.
+The running launcher verifies the manifest signature and package checksum, extracts into staging, and starts its existing local Rust updater helper. The helper waits for the launcher process to exit, stages the replacement beside the installation, swaps it with a backup, and restarts it. The replacement launcher removes the backup after its UI starts successfully. macOS updates must have a valid bundle signature and preserve the installed app's signing team when one exists. Authenticated ad-hoc builds can update to another authenticated ad-hoc build or to a Developer ID build.
 
 Self-update is supported for packaged `.app` bundles, Linux AppImages, and installed or portable folders named `ToolboxCraft`. Development binaries and arbitrary portable folder names report an actionable error. If a replacement cannot start, recover the adjacent `.toolboxcraft-backup` copy. A failed helper leaves the working installation or its backup intact.
 
