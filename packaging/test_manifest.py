@@ -67,6 +67,20 @@ class ManifestTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, 'does not match'):
             manifest.assemble(self.dist)
 
+    def test_prerelease_manifest_is_rejected_before_signing(self):
+        for metadata_path in self.dist.glob('metadata-*.json'):
+            metadata = json.loads(metadata_path.read_text())
+            metadata['version'] = '0.1.8-beta.1'
+            old_name = metadata['package']['file']
+            new_name = old_name.replace('0.1.7', '0.1.8-beta.1')
+            (self.dist / old_name).rename(self.dist / new_name)
+            metadata['package']['file'] = new_name
+            metadata_path.write_text(json.dumps(metadata))
+        with self.assertRaisesRegex(ValueError, 'Only stable'):
+            manifest.assemble(self.dist, require_signature=True, require_all_platforms=True)
+        self.assertFalse((self.dist / 'update.json').exists())
+        self.assertFalse((self.dist / 'update.json.sig').exists())
+
     def test_local_unsigned_manifest_removes_stale_signature(self):
         (self.dist / 'update.json.sig').write_bytes(b'stale')
         with patch.dict(os.environ, {'UPDATE_PRIVATE_KEY': ''}):
