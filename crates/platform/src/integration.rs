@@ -219,6 +219,23 @@ pub fn notify(title: &str, message: &str) {
     let title = title.to_string();
     let message = message.to_string();
     std::thread::spawn(move || {
+        #[cfg(target_os = "macos")]
+        {
+            static APPLICATION_READY: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+            // appname() has no effect on macOS. Set the bundle ID before show()
+            // to avoid the library's AppleScript lookup for "use_default".
+            if !APPLICATION_READY.get_or_init(|| {
+                match notify_rust::set_application("dev.toolboxcraft.launcher") {
+                    Ok(()) => true,
+                    Err(err) => {
+                        tracing::debug!("Desktop notification unavailable: {err}");
+                        false
+                    }
+                }
+            }) {
+                return;
+            }
+        }
         if let Err(err) = notify_rust::Notification::new()
             .summary(&title)
             .body(&message)
