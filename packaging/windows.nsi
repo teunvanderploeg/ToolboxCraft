@@ -4,6 +4,9 @@ Name "ToolboxCraft"
 OutFile "${OUT}\toolboxcraft-${VERSION}-${ARCH}-setup.exe"
 InstallDir "$LOCALAPPDATA\Programs\ToolboxCraft"
 RequestExecutionLevel user
+!ifdef SIGN_SCRIPT
+  !uninstfinalize '"${SIGN_PYTHON}" "${SIGN_SCRIPT}" "%1"' = 0
+!endif
 !define MUI_ICON "${SOURCE}\toolboxcraft.ico"
 !define MUI_UNICON "${SOURCE}\toolboxcraft.ico"
 !insertmacro MUI_PAGE_DIRECTORY
