@@ -581,12 +581,14 @@ mod tests {
         use std::io::{Read, Write};
         let key = SigningKey::from_bytes(&[42; 32]);
         let bytes = b"verified update archive";
+        let mut next_version = semver::Version::parse(env!("CARGO_PKG_VERSION")).unwrap();
+        next_version.patch += 1;
         let manifest = serde_json::to_vec(&self_update::UpdateManifest {
-            version: "0.1.8".into(),
+            version: next_version.to_string(),
             packages: BTreeMap::from([(
                 "linux-x86_64".into(),
                 self_update::UpdatePackage {
-                    file: "toolboxcraft-0.1.8-linux-x86_64-update.zip".into(),
+                    file: format!("toolboxcraft-{next_version}-linux-x86_64-update.zip"),
                     sha256: hex::encode(Sha256::digest(bytes)),
                     size: bytes.len() as u64,
                 },
