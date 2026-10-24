@@ -16,6 +16,10 @@ tracing.workspace = true
 sysinfo.workspace = true
 eframe = { version = "=0.33.3", default-features = false, features = ["glow", "wayland", "x11", "accesskit", "default_fonts"] }
 egui_extras = { version = "=0.33.3", features = ["image"] }
+egui_commonmark = { version = "=0.22.0", default-features = false, features = ["pulldown_cmark"] }
+pulldown-cmark = { version = "0.13", default-features = false }
+pulldown-cmark-to-cmark = "21.1"
+url = "2"
 image = { version = "0.25", default-features = false, features = ["png"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tracing-appender = "0.2"

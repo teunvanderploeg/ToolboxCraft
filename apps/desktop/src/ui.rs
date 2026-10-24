@@ -106,6 +106,7 @@ pub struct Toolbox {
     frames: u32,
     quit: bool,
     last_state: State,
+    release_markdown: crate::markdown::ReleaseMarkdown,
 }
 fn wake_engine_events(
     events: mpsc::Receiver<Event>,
@@ -191,6 +192,7 @@ impl Toolbox {
             frames: 0,
             quit: false,
             last_state: State::default(),
+            release_markdown: crate::markdown::ReleaseMarkdown::default(),
         }
     }
     fn send(&self, command: Command) {
@@ -495,11 +497,13 @@ impl Toolbox {
                         ui.label("Cached release information. Check updates to refresh.");
                     }
                     ui.add_space(12.0);
-                    ui.label(
+                    self.release_markdown.show(
+                        ui,
                         cached
                             .release
                             .body
                             .as_deref()
+                            .filter(|body| !body.trim().is_empty())
                             .unwrap_or("No release notes published."),
                     );
                     ui.add_space(16.0);
@@ -632,6 +636,7 @@ impl eframe::App for Toolbox {
             visuals.override_text_color = Some(Color32::from_rgb(242, 243, 245));
         }
         visuals.selection.bg_fill = BLUE;
+        visuals.hyperlink_color = BLUE;
         visuals.interact_cursor = Some(egui::CursorIcon::PointingHand);
         ctx.set_visuals(visuals);
         ctx.style_mut(|s| {
@@ -904,7 +909,7 @@ pub fn preview_state(handle: &EngineHandle) {
         let target = Target::current().unwrap();
         let name = format!("{}-{version}-{}", app.id, target.asset_suffix());
         state.releases.insert(app.id.into(),CachedRelease {
-            release: Release { tag_name:format!("v{version}"), body:Some("## What's new\n\n• Improved file compatibility\n• Faster startup\n• Fixed rendering issues".into()), html_url:format!("https://github.com/{}/releases",app.repo()), published_at:Some("2026-10-12".into()), prerelease:false, draft:false,
+            release: Release { tag_name:format!("v{version}"), body:Some("## What's new\n\n- **Improved file compatibility** for more formats\n- Faster startup and smoother editing\n- Fixed rendering issues with `PSD` files\n\n### Details\n\nSee the [full changelog](https://github.com/storytold/photocraft/releases) for all changes.".into()), html_url:format!("https://github.com/{}/releases",app.repo()), published_at:Some("2026-10-12".into()), prerelease:false, draft:false,
                 assets: vec![Asset {name:name.clone(),size:120_000_000,browser_download_url:format!("https://github.com/{}/releases/download/v{version}/{name}",app.repo())}] },
             etag:None,checked_at:now()
         });
@@ -1315,6 +1320,67 @@ mod tests {
             h.query_by_label("No matching apps. Try a different search.")
                 .is_some()
         );
+    }
+    #[test]
+    fn release_notes_render_markdown_links_and_refresh_changed_bodies() {
+        let mut h = harness();
+        h.state_mut().details = Some("photocraft".into());
+        let state = h.state().handle.state.clone();
+        state.lock().unwrap().releases.get_mut("photocraft").unwrap().release.body = Some(
+            "## Changes\n\n- **Better editing**\n- [Changelog](https://example.com/releases)\n- [Unsafe](javascript:alert%281%29)".into(),
+        );
+        h.run_steps(3);
+        assert!(h.query_by_label("Changes").is_some());
+        assert!(h.query_by_label("Better editing").is_some());
+        assert!(h.query_by_label("Unsafe").is_some());
+        assert!(h.query_by_label("## Changes").is_none());
+        for theme in [Theme::Dark, Theme::Light] {
+            state.lock().unwrap().settings.theme = theme;
+            h.run_steps(3);
+            let link = h
+                .output()
+                .shapes
+                .iter()
+                .find_map(|shape| match &shape.shape {
+                    egui::Shape::Text(text) if text.galley.text() == "Changelog" => Some(text),
+                    _ => None,
+                })
+                .expect("rendered changelog link");
+            assert_eq!(link.fallback_color, BLUE);
+            assert!(link.galley.job.sections.iter().all(|section| {
+                section.format.color == Color32::PLACEHOLDER || section.format.color == BLUE
+            }));
+        }
+        h.get_by_label("Changelog").click();
+        h.run_steps(1);
+        assert!(h.output().platform_output.commands.iter().any(|command| {
+            matches!(command, egui::OutputCommand::OpenUrl(url) if url.url == "https://example.com/releases")
+        }));
+
+        state
+            .lock()
+            .unwrap()
+            .releases
+            .get_mut("photocraft")
+            .unwrap()
+            .release
+            .body = Some("## Refreshed notes".into());
+        h.run_steps(3);
+        assert!(h.query_by_label("Refreshed notes").is_some());
+        assert!(h.query_by_label("Changes").is_none());
+
+        for body in [None, Some("  \n ".into())] {
+            state
+                .lock()
+                .unwrap()
+                .releases
+                .get_mut("photocraft")
+                .unwrap()
+                .release
+                .body = body;
+            h.run_steps(3);
+            assert!(h.query_by_label("No release notes published.").is_some());
+        }
     }
     #[test]
     fn both_themes_render_and_release_notes_open_from_link() {

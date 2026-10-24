@@ -1,4 +1,5 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
+mod markdown;
 mod tray;
 mod ui;
 mod window;
