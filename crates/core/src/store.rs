@@ -54,6 +54,10 @@ impl Store {
         )
     }
     pub fn recover(&self, state: &mut State) -> Result<()> {
+        // Cancellations belong to the previous session and need no recovery.
+        state
+            .operations
+            .retain(|_, op| !matches!(op, Operation::Cancelled));
         for op in state.operations.values_mut() {
             if op.active() {
                 *op = Operation::Failed(
@@ -126,6 +130,30 @@ mod tests {
         migrated.settings.auto_update_toolboxcraft = false;
         store.save(&migrated).unwrap();
         assert!(!store.load().unwrap().settings.auto_update_toolboxcraft);
+    }
+    #[test]
+    fn recovery_removes_saved_cancellations_and_preserves_failures() {
+        let d = tempfile::tempdir().unwrap();
+        let store = Store::new(d.path()).unwrap();
+        let mut state = State::default();
+        state
+            .operations
+            .insert("wordcraft".into(), Operation::Cancelled);
+        state.operations.insert(
+            "photocraft".into(),
+            Operation::Failed("Download failed".into()),
+        );
+        store.save(&state).unwrap();
+
+        let mut recovered = store.load().unwrap();
+        store.recover(&mut recovered).unwrap();
+
+        assert!(!recovered.operations.contains_key("wordcraft"));
+        assert_eq!(
+            recovered.operations["photocraft"],
+            Operation::Failed("Download failed".into())
+        );
+        assert_eq!(store.load().unwrap().operations, recovered.operations);
     }
     #[test]
     fn interruption_preserves_installs_and_releases_lock() {

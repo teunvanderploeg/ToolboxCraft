@@ -1,6 +1,6 @@
 use crate::tray::{Tray, TrayAction, TrayEvents};
 use eframe::egui::{self, Color32, RichText};
-use std::{path::PathBuf, sync::mpsc, time::Duration};
+use std::{collections::BTreeMap, path::PathBuf, sync::mpsc, time::Duration};
 use toolboxcraft_core::{
     catalog::{App, CATALOG, by_id},
     engine::{Command, EngineHandle, Event},
@@ -11,6 +11,7 @@ use toolboxcraft_core::{
 const BLUE: Color32 = Color32::from_rgb(107, 138, 255);
 const MUTED: Color32 = Color32::from_rgb(165, 167, 172);
 const ICON_ACTION_SIZE: f32 = 28.0;
+const CANCELLED_FEEDBACK_SECONDS: f64 = 3.0;
 fn muted(ui: &egui::Ui) -> Color32 {
     if ui.visuals().dark_mode {
         MUTED
@@ -106,6 +107,7 @@ pub struct Toolbox {
     frames: u32,
     quit: bool,
     last_state: State,
+    cancelled_since: BTreeMap<String, f64>,
     release_markdown: crate::markdown::ReleaseMarkdown,
 }
 fn wake_engine_events(
@@ -192,6 +194,7 @@ impl Toolbox {
             frames: 0,
             quit: false,
             last_state: State::default(),
+            cancelled_since: BTreeMap::new(),
             release_markdown: crate::markdown::ReleaseMarkdown::default(),
         }
     }
@@ -450,12 +453,16 @@ impl Toolbox {
                                         self.send(Command::Install(app.id.into()));
                                     }
                                 }
-                                Operation::Cancelled => {
+                                Operation::Cancelled
+                                    if self.cancelled_since.get(app.id).is_some_and(|since| {
+                                        ui.input(|i| i.time) - since < CANCELLED_FEEDBACK_SECONDS
+                                    }) =>
+                                {
                                     ui.label(
                                         RichText::new("Cancelled").size(11.0).color(muted(ui)),
                                     );
                                 }
-                                Operation::Complete => {}
+                                Operation::Cancelled | Operation::Complete => {}
                             }
                         }
                     });
@@ -617,6 +624,16 @@ impl eframe::App for Toolbox {
             self.last_state.clone_from(&state);
         }
         let state = self.last_state.clone();
+        // Keep cancellation in engine state to suppress automatic retries, but
+        // show its feedback only briefly, even when the row is filtered out.
+        self.cancelled_since
+            .retain(|id, _| matches!(state.operations.get(id), Some(Operation::Cancelled)));
+        let time = ctx.input(|i| i.time);
+        for (id, operation) in &state.operations {
+            if matches!(operation, Operation::Cancelled) {
+                self.cancelled_since.entry(id.clone()).or_insert(time);
+            }
+        }
         let target = Target::current().unwrap();
         let preference = match state.settings.theme {
             Theme::System => egui::ThemePreference::System,
@@ -1117,6 +1134,46 @@ mod tests {
             assert!(commands.contains(&egui::ViewportCommand::Close));
             assert!(!commands.contains(&egui::ViewportCommand::CancelClose));
         }
+    }
+    #[test]
+    fn cancellation_feedback_expires_and_a_new_cancellation_shows_again() {
+        let (mut h, mut commands) = harness_with_commands();
+        let state = h.state().handle.state.clone();
+        state
+            .lock()
+            .unwrap()
+            .operations
+            .insert("photocraft".into(), Operation::Cancelled);
+        h.run_steps(3);
+        assert!(h.query_by_label("Cancelled").is_some());
+
+        let expired = h.ctx.input(|i| i.time) - CANCELLED_FEEDBACK_SECONDS;
+        h.state_mut()
+            .cancelled_since
+            .insert("photocraft".into(), expired);
+        h.run_steps(3);
+        assert!(h.query_by_label("Cancelled").is_none());
+        // Hiding feedback must not re-enable automatic update retries.
+        assert_eq!(
+            state.lock().unwrap().operations["photocraft"],
+            Operation::Cancelled
+        );
+        assert!(h.query_by_label("Update").is_some());
+        assert!(commands.try_recv().is_err());
+
+        state
+            .lock()
+            .unwrap()
+            .operations
+            .insert("photocraft".into(), Operation::Queued);
+        h.run_steps(3);
+        state
+            .lock()
+            .unwrap()
+            .operations
+            .insert("photocraft".into(), Operation::Cancelled);
+        h.run_steps(3);
+        assert!(h.query_by_label("Cancelled").is_some());
     }
     #[test]
     fn rows_launch_and_nested_update_controls_do_not_launch() {
