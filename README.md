@@ -18,7 +18,7 @@ Downloads cover Intel and Apple silicon Macs, Windows x64 and ARM64, and Linux x
 
 All alternatives and SHA-256 checksums are on the release page. On macOS, drag ToolboxCraft from the DMG into Applications. On Windows, run the installer or extract the portable ZIP and open `ToolboxCraft/toolboxcraft.exe`. On Linux, make the AppImage executable and run it. Quit an older copy before replacing it.
 
-Version 0.1.7 enables automatic ToolboxCraft updates. Install it manually once when upgrading from 0.1.6 or earlier; those builds cannot check for ToolboxCraft updates. The macOS build is ad-hoc signed and not Apple-notarized; Windows builds are unsigned. Initial installation can still show Gatekeeper or SmartScreen prompts. Apple and Windows distribution signing will be added separately; it is not required for updates authenticated by the embedded Ed25519 key.
+Version 0.1.7 enables automatic ToolboxCraft updates. Install it manually once when upgrading from 0.1.6 or earlier; those builds cannot check for ToolboxCraft updates. The initial 0.1.7 release uses ad-hoc signing on macOS and unsigned Windows builds. Subsequent releases using the platform-signing workflow require Developer ID signing and Apple notarization on macOS and trusted code signing on Windows; SmartScreen can still prompt while a new release builds reputation.
 
 ![ToolboxCraft app list](docs/screenshots/apps.png)
 
@@ -82,7 +82,7 @@ Search app names or descriptions, use Cmd/Ctrl+F to focus search, click an insta
 
 ## Package releases
 
-The CI workflow runs formatting, Clippy, tests, and native builds on macOS, Windows, and Linux. The release workflow prepares universal macOS DMGs, Windows per-user NSIS installers and portable ZIPs, Linux AppImages and tarballs, updater ZIPs, and checksums. Pushing a `v<version>` tag builds and automatically publishes a complete GitHub release after every platform succeeds. The release requires a matching Ed25519 update-signing key. Apple and Windows distribution certificates are optional and are not required to publish updates. A manual workflow run produces reviewable artifacts without publishing.
+The CI workflow runs formatting, Clippy, tests, and native builds on macOS, Windows, and Linux. The release workflow prepares universal macOS DMGs, Windows per-user NSIS installers and portable ZIPs, Linux AppImages and tarballs, updater ZIPs, and checksums. Pushing a `v<version>` tag builds and automatically publishes a complete GitHub release after every platform succeeds. The release requires a matching Ed25519 update-signing key, Developer ID signing and notarization on macOS, and trusted timestamped code signing on Windows. A manual workflow run produces reviewable artifacts without publishing; these test artifacts may be ad-hoc signed or unsigned.
 
 Build both Rust executables before packaging. On macOS, combine x86_64 and aarch64 builds with `lipo` into a shared binary directory. On Windows install NSIS and add `makensis` to PATH. On Linux install `appimagetool`.
 
@@ -91,7 +91,7 @@ python3 packaging/package.py --platform macos-universal --version 0.1.9 --bin-di
 python3 packaging/manifest.py
 ```
 
-Other platform keys are `windows-x64`, `windows-arm64`, `linux-x86_64`, and `linux-aarch64`. Package scripts require only standard Python libraries and the platform packaging tools. macOS packages without signing credentials are ad-hoc signed for local testing. Public tag releases require the update-signing secret; platform certificates are optional.
+Other platform keys are `windows-x64`, `windows-arm64`, `linux-x86_64`, and `linux-aarch64`. Package scripts require only standard Python libraries and the platform packaging tools. macOS packages without signing credentials are ad-hoc signed for local testing. Public tag releases reject missing distribution-signing credentials.
 
 For signed releases, configure the CI signing certificate and notarization credentials described in [packaging/README.md](packaging/README.md). The Ed25519 release key authenticates self-updates. Apple and Windows certificates authenticate downloads to the operating system. Cross-platform runtime smoke tests must run on each target OS before distribution.
 

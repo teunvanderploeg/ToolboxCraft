@@ -22,6 +22,17 @@ jobs:
         run: python packaging/manifest.py --check-signing-key
         env:
           UPDATE_PRIVATE_KEY: ${{ secrets.TOOLBOXCRAFT_UPDATE_PRIVATE_KEY }}
+      - name: Require trusted platform signing for published releases
+        if: github.ref_type == 'tag'
+        run: python packaging/signing.py
+        env:
+          MACOS_CERTIFICATE_BASE64: ${{ secrets.MACOS_CERTIFICATE_BASE64 }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          MACOS_SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
+          MACOS_NOTARY_APPLE_ID: ${{ secrets.MACOS_NOTARY_APPLE_ID }}
+          MACOS_NOTARY_TEAM_ID: ${{ secrets.MACOS_NOTARY_TEAM_ID }}
+          MACOS_NOTARY_PASSWORD: ${{ secrets.MACOS_NOTARY_PASSWORD }}
+          WINDOWS_CERTIFICATE_BASE64: ${{ secrets.WINDOWS_CERTIFICATE_BASE64 }}
   package:
     needs: signing
     strategy:
@@ -36,6 +47,7 @@ jobs:
     runs-on: ${{ matrix.runner }}
     env:
       TOOLBOXCRAFT_RELEASE_REPO: ${{ github.repository }}
+      REQUIRE_DISTRIBUTION_SIGNING: ${{ github.ref_type == 'tag' && '1' || '0' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
